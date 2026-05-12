@@ -91,6 +91,8 @@ services:
         condition: service_healthy
     ports:
       - "${N8N_PORT}:5678"
+    extra_hosts:
+      - "woo.local:host-gateway"
     environment:
       N8N_HOST: ${N8N_HOST}
       N8N_PORT: 5678
