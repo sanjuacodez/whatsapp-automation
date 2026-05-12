@@ -115,6 +115,31 @@ services:
       - n8n_data:/home/node/.n8n
       - ./workflows:/workflows
 
+  connect-ui:
+    image: node:20-alpine
+    container_name: whatsapp-connect-ui
+    restart: unless-stopped
+    depends_on:
+      evolution-api:
+        condition: service_started
+      n8n:
+        condition: service_started
+    working_dir: /app
+    command:
+      - node
+      - server.js
+    ports:
+      - "3000:3000"
+    environment:
+      CONNECT_UI_PORT: 3000
+      EVOLUTION_INTERNAL_URL: http://evolution-api:8080
+      EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+      EVOLUTION_INSTANCE: ${EVOLUTION_INSTANCE}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL}
+      N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL}
+    volumes:
+      - ./connect-ui:/app:ro
+
 volumes:
   postgres_data:
   redis_data:

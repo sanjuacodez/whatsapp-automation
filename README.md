@@ -33,6 +33,7 @@ High-level flow:
 
 - Evolution API on `http://localhost:8080`
 - n8n on `http://localhost:5678`
+- Connect UI on `http://localhost:3000`
 - PostgreSQL for Evolution persistence
 - Redis for Evolution cache and session persistence
 
@@ -40,6 +41,7 @@ High-level flow:
 
 - n8n editor: `http://localhost:5678`
 - Evolution API health: `http://localhost:8080`
+- Connect UI: `http://localhost:3000`
 
 After the first startup, open n8n in the browser and complete the owner account setup. From there you can:
 
@@ -49,6 +51,15 @@ After the first startup, open n8n in the browser and complete the owner account 
 - add more logic step by step as your automation grows
 
 This WhatsApp connection is not made from n8n directly. The WhatsApp session is handled by Evolution API. n8n only receives webhook events from Evolution and decides what to do with them.
+
+The local Connect UI gives you:
+
+- live connection state
+- QR display for WhatsApp Linked Devices
+- live 8-character phone pairing code
+- a form to recreate the instance with a phone number
+- one-click webhook restore back to n8n
+- direct link to the n8n editor
 
 ## Quick start
 
@@ -69,14 +80,15 @@ Use the detailed guides here:
 
 WhatsApp is connected through Evolution API, not from inside n8n.
 
+The easiest local option is to open `http://localhost:3000` and use the Connect UI.
+
 Typical connection flow:
 
 1. Start the stack with Docker.
-2. Create the Evolution instance.
-3. Request the QR from Evolution.
-4. Scan that QR from the WhatsApp mobile app using Linked Devices.
-5. Confirm the instance state changes to `open`.
-6. Keep the n8n workflow active so incoming events are processed.
+2. Open the Connect UI.
+3. Either scan the QR or use the 8-character phone pairing code.
+4. Confirm the instance state changes to `open`.
+5. Keep the n8n workflow active so incoming events are processed.
 
 Useful commands:
 
