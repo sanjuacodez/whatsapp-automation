@@ -13,38 +13,162 @@
       "name": "Evolution Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [
-        260,
-        280
-      ]
+      "position": [220, 320]
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const payload = $json.body ?? $json;\n\nfunction firstDefined(...values) {\n  return values.find((value) => value !== undefined && value !== null);\n}\n\nfunction normalizeText(message) {\n  return firstDefined(\n    message?.conversation,\n    message?.extendedTextMessage?.text,\n    message?.imageMessage?.caption,\n    message?.videoMessage?.caption,\n    message?.documentMessage?.caption,\n    ''\n  );\n}\n\nfunction extractAudio(message) {\n  return {\n    url: firstDefined(message?.audioMessage?.url, message?.pttMessage?.url, null),\n    base64: firstDefined(message?.audioMessage?.base64, message?.pttMessage?.base64, null),\n    mimeType: firstDefined(message?.audioMessage?.mimetype, message?.pttMessage?.mimetype, 'audio/ogg')\n  };\n}\n\nfunction stripHtml(value) {\n  return value ? value.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim() : '';\n}\n\nfunction detectProductIntent(value) {\n  if (!value) {\n    return false;\n  }\n\n  return /(product|products|price|cost|stock|available|availability|catalog|item|buy|purchase|details)/i.test(value);\n}\n\nasync function fetchWooCommerceProducts(query, baseUrl, consumerKey, consumerSecret) {\n  const endpoint = new URL(`${baseUrl.replace(/\\/$/, '')}/wp-json/wc/v3/products`);\n  endpoint.searchParams.set('search', query);\n  endpoint.searchParams.set('per_page', '3');\n  endpoint.searchParams.set('status', 'publish');\n\n  const credentials = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');\n  const response = await fetch(endpoint, {\n    headers: {\n      Authorization: `Basic ${credentials}`\n    }\n  });\n\n  if (!response.ok) {\n    const errorText = await response.text();\n    throw new Error(`WooCommerce product lookup failed: ${response.status} ${errorText}`);\n  }\n\n  const products = await response.json();\n  if (!Array.isArray(products)) {\n    return [];\n  }\n\n  return products.map((product) => ({\n    id: product.id,\n    name: product.name,\n    price: product.price_html || product.price || product.regular_price || '',\n    stockStatus: product.stock_status || 'unknown',\n    permalink: product.permalink || '',\n    shortDescription: stripHtml(product.short_description || product.description || '').slice(0, 220)\n  }));\n}\n\nfunction formatProductContext(products) {\n  if (!products.length) {\n    return 'WooCommerce product lookup returned no matching products.';\n  }\n\n  return products\n    .map((product, index) => [\n      `${index + 1}. ${product.name}`,\n      `Price: ${product.price || 'not available'}`,\n      `Stock: ${product.stockStatus}`,\n      product.shortDescription ? `Summary: ${product.shortDescription}` : null,\n      product.permalink ? `Link: ${product.permalink}` : null\n    ].filter(Boolean).join('\\n'))\n    .join('\\n\\n');\n}\n\nconst event = firstDefined(payload?.event, payload?.type, payload?.data?.event, 'unknown');\nconst data = firstDefined(payload?.data, payload);\nconst key = firstDefined(data?.key, data?.message?.key, data?.messages?.[0]?.key, {});\nconst message = firstDefined(data?.message, data?.messages?.[0]?.message, {});\nconst remoteJid = firstDefined(key?.remoteJid, data?.remoteJid, '');\nconst fromMe = Boolean(firstDefined(key?.fromMe, data?.fromMe, false));\nconst isGroup = remoteJid.endsWith('@g.us');\nconst isStatus = remoteJid === 'status@broadcast';\nconst senderNumber = remoteJid.replace(/@.+$/, '').replace(/\\D/g, '');\nconst text = normalizeText(message).trim();\nconst audio = extractAudio(message);\nconst isAudio = Boolean(audio.url || audio.base64);\n\nif (fromMe || isGroup || isStatus) {\n  return {\n    json: {\n      action: 'skipped',\n      reason: 'self-group-or-status',\n      event,\n      remoteJid\n    }\n  };\n}\n\nif (!text && !isAudio) {\n  return {\n    json: {\n      action: 'skipped',\n      reason: 'no-text-or-audio',\n      event,\n      remoteJid\n    }\n  };\n}\n\nconst openAiKey = process.env.OPENAI_API_KEY;\nconst evolutionApiKey = process.env.EVOLUTION_API_KEY;\nconst evolutionInstance = process.env.EVOLUTION_INSTANCE;\nconst evolutionServerUrl = process.env.EVOLUTION_SERVER_URL;\nconst wooCommerceBaseUrl = process.env.WOOCOMMERCE_BASE_URL;\nconst wooCommerceConsumerKey = process.env.WOOCOMMERCE_CONSUMER_KEY;\nconst wooCommerceConsumerSecret = process.env.WOOCOMMERCE_CONSUMER_SECRET;\nconst hasWooCommerceConfig = Boolean(wooCommerceBaseUrl && wooCommerceConsumerKey && wooCommerceConsumerSecret);\n\nif (!openAiKey) {\n  throw new Error('OPENAI_API_KEY is missing in the n8n environment');\n}\nif (!evolutionApiKey) {\n  throw new Error('EVOLUTION_API_KEY is missing in the n8n environment');\n}\nif (!evolutionInstance) {\n  throw new Error('EVOLUTION_INSTANCE is missing in the n8n environment');\n}\nif (!evolutionServerUrl) {\n  throw new Error('EVOLUTION_SERVER_URL is missing in the n8n environment');\n}\n\nlet promptText = text;\nlet transcription = null;\n\nif (isAudio) {\n  let audioBuffer;\n\n  if (audio.base64) {\n    const normalizedBase64 = audio.base64.includes(',')\n      ? audio.base64.split(',').pop()\n      : audio.base64;\n    audioBuffer = Buffer.from(normalizedBase64, 'base64');\n  } else {\n    const audioResponse = await fetch(audio.url);\n    if (!audioResponse.ok) {\n      throw new Error(`Failed to download audio: ${audioResponse.status} ${audioResponse.statusText}`);\n    }\n    audioBuffer = Buffer.from(await audioResponse.arrayBuffer());\n  }\n\n  const formData = new FormData();\n  const extension = audio.mimeType.includes('mpeg') ? 'mp3' : audio.mimeType.includes('mp4') ? 'm4a' : 'ogg';\n  formData.append('file', new Blob([audioBuffer], { type: audio.mimeType }), `voice-note.${extension}`);\n  formData.append('model', 'whisper-1');\n\n  const transcriptionResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {\n    method: 'POST',\n    headers: {\n      Authorization: `Bearer ${openAiKey}`\n    },\n    body: formData\n  });\n\n  if (!transcriptionResponse.ok) {\n    const errorText = await transcriptionResponse.text();\n    throw new Error(`Whisper transcription failed: ${transcriptionResponse.status} ${errorText}`);\n  }\n\n  const transcriptionPayload = await transcriptionResponse.json();\n  transcription = transcriptionPayload.text?.trim() ?? '';\n  promptText = transcription;\n  console.log('[whatsapp-ai] transcription', { senderNumber, transcription });\n}\n\nif (!promptText) {\n  return {\n    json: {\n      action: 'skipped',\n      reason: 'empty-prompt-after-normalization',\n      event,\n      remoteJid\n    }\n  };\n}\n\nconst productIntent = detectProductIntent(promptText);\nlet matchedProducts = [];\nlet businessContext = '';\n\nif (productIntent && hasWooCommerceConfig) {\n  matchedProducts = await fetchWooCommerceProducts(\n    promptText,\n    wooCommerceBaseUrl,\n    wooCommerceConsumerKey,\n    wooCommerceConsumerSecret\n  );\n  businessContext = formatProductContext(matchedProducts);\n}\n\nconst systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nSupport Malayalam, Manglish, English, Hindi, Tamil, and Kannada.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nDo not use formal business language unless user speaks formally.\nIf user sends Malayalam, reply in Malayalam.\nIf user sends Manglish, reply in Manglish.\nIf business context is provided, use only that business context for product facts and do not invent prices, stock, or URLs.`;\n\nconst userPrompt = businessContext\n  ? `Customer message:\n${promptText}\n\nBusiness context:\n${businessContext}\n\nUse the business context when answering product questions. If no matching products were found, ask a short follow-up question.`\n  : promptText;\n\nconst chatResponse = await fetch('https://api.openai.com/v1/chat/completions', {\n  method: 'POST',\n  headers: {\n    Authorization: `Bearer ${openAiKey}`,\n    'Content-Type': 'application/json'\n  },\n  body: JSON.stringify({\n    model: 'gpt-4o-mini',\n    temperature: 0.6,\n    messages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: userPrompt }\n    ]\n  })\n});\n\nif (!chatResponse.ok) {\n  const errorText = await chatResponse.text();\n  throw new Error(`OpenAI reply generation failed: ${chatResponse.status} ${errorText}`);\n}\n\nconst chatPayload = await chatResponse.json();\nconst replyText = chatPayload.choices?.[0]?.message?.content?.trim();\n\nif (!replyText) {\n  throw new Error('OpenAI returned an empty reply');\n}\n\nconsole.log('[whatsapp-ai] incoming', { senderNumber, promptText, productIntent, matchedProducts: matchedProducts.length });\nconsole.log('[whatsapp-ai] reply', { senderNumber, replyText });\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: {\n    apikey: evolutionApiKey,\n    'Content-Type': 'application/json'\n  },\n  body: JSON.stringify({\n    number: senderNumber,\n    text: replyText\n  })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\n\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: 'replied',\n    event,\n    remoteJid,\n    senderNumber,\n    promptText,\n    transcription,\n    productIntent,\n    matchedProducts,\n    replyText,\n    evolutionResponse: sendPayload\n  }\n};"
+        "jsCode": "const payload = $json.body ?? $json;\n\nfunction firstDefined(...values) {\n  return values.find((value) => value !== undefined && value !== null);\n}\n\nfunction normalizeText(message) {\n  return firstDefined(\n    message?.conversation,\n    message?.extendedTextMessage?.text,\n    message?.imageMessage?.caption,\n    message?.videoMessage?.caption,\n    message?.documentMessage?.caption,\n    ''\n  );\n}\n\nfunction extractAudio(message) {\n  return {\n    url: firstDefined(message?.audioMessage?.url, message?.pttMessage?.url, null),\n    base64: firstDefined(message?.audioMessage?.base64, message?.pttMessage?.base64, null),\n    mimeType: firstDefined(message?.audioMessage?.mimetype, message?.pttMessage?.mimetype, 'audio/ogg')\n  };\n}\n\nfunction detectProductIntent(value) {\n  return /(product|products|price|cost|stock|available|availability|catalog|item|buy|purchase|details)/i.test(value || '');\n}\n\nconst event = firstDefined(payload?.event, payload?.type, payload?.data?.event, 'unknown');\nconst data = firstDefined(payload?.data, payload);\nconst key = firstDefined(data?.key, data?.message?.key, data?.messages?.[0]?.key, {});\nconst message = firstDefined(data?.message, data?.messages?.[0]?.message, {});\nconst remoteJid = firstDefined(key?.remoteJid, data?.remoteJid, '');\nconst fromMe = Boolean(firstDefined(key?.fromMe, data?.fromMe, false));\nconst isGroup = remoteJid.endsWith('@g.us');\nconst isStatus = remoteJid === 'status@broadcast';\nconst senderNumber = remoteJid.replace(/@.+$/, '').replace(/\\D/g, '');\nconst text = normalizeText(message).trim();\nconst audio = extractAudio(message);\nconst isAudio = Boolean(audio.url || audio.base64);\nconst hasImage = Boolean(message?.imageMessage);\nconst hasDocument = Boolean(message?.documentMessage);\n\nif (fromMe || isGroup || isStatus) {\n  return { json: { action: 'skipped', reason: 'self-group-or-status', route: 'skip', event, remoteJid } };\n}\n\nif (!senderNumber) {\n  return { json: { action: 'skipped', reason: 'missing-sender-number', route: 'skip', event, remoteJid } };\n}\n\nif (!text && !isAudio) {\n  return { json: { action: 'skipped', reason: 'no-text-or-audio', route: 'skip', event, remoteJid } };\n}\n\nlet promptText = text;\nlet transcription = null;\n\nif (isAudio) {\n  const openAiKey = process.env.OPENAI_API_KEY;\n  if (!openAiKey) {\n    throw new Error('OPENAI_API_KEY is missing in the n8n environment');\n  }\n\n  let audioBuffer;\n  if (audio.base64) {\n    const normalizedBase64 = audio.base64.includes(',') ? audio.base64.split(',').pop() : audio.base64;\n    audioBuffer = Buffer.from(normalizedBase64, 'base64');\n  } else {\n    const audioResponse = await fetch(audio.url);\n    if (!audioResponse.ok) {\n      throw new Error(`Failed to download audio: ${audioResponse.status} ${audioResponse.statusText}`);\n    }\n    audioBuffer = Buffer.from(await audioResponse.arrayBuffer());\n  }\n\n  const formData = new FormData();\n  const extension = audio.mimeType.includes('mpeg') ? 'mp3' : audio.mimeType.includes('mp4') ? 'm4a' : 'ogg';\n  formData.append('file', new Blob([audioBuffer], { type: audio.mimeType }), `voice-note.${extension}`);\n  formData.append('model', 'whisper-1');\n\n  const transcriptionResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {\n    method: 'POST',\n    headers: { Authorization: `Bearer ${openAiKey}` },\n    body: formData\n  });\n\n  if (!transcriptionResponse.ok) {\n    const errorText = await transcriptionResponse.text();\n    throw new Error(`Whisper transcription failed: ${transcriptionResponse.status} ${errorText}`);\n  }\n\n  const transcriptionPayload = await transcriptionResponse.json();\n  transcription = transcriptionPayload.text?.trim() ?? '';\n  promptText = transcription;\n}\n\nif (!promptText) {\n  return { json: { action: 'skipped', reason: 'empty-prompt-after-normalization', route: 'skip', event, remoteJid } };\n}\n\nconst storeOrPersonalSignals = /(order|tracking|track my order|shipment|shipping status|refund|return|exchange|invoice|billing|payment|my account|my address|where is your store|store location|shop location|branch|open today|close today|opening hours|closing time|contact number|phone number|owner|manager|email address|location)/i;\nconst visualSignals = /(match|same|similar|check|identify|compare|from (this|the) (photo|image|pic)|see (this|the) (photo|image|pic))/i;\nconst requiresHuman = hasImage || hasDocument || visualSignals.test(promptText) || storeOrPersonalSignals.test(promptText);\nconst handoffReason = hasImage\n  ? 'image-review'\n  : hasDocument\n    ? 'document-review'\n    : visualSignals.test(promptText)\n      ? 'visual-product-match'\n      : storeOrPersonalSignals.test(promptText)\n        ? 'store-or-personal-details'\n        : null;\nconst productIntent = !requiresHuman && detectProductIntent(promptText);\n\nreturn {\n  json: {\n    action: 'routed',\n    event,\n    remoteJid,\n    senderNumber,\n    promptText,\n    originalText: text,\n    transcription,\n    route: requiresHuman ? 'human' : productIntent ? 'product' : 'general',\n    productIntent,\n    requiresHuman,\n    handoffReason,\n    hasImage,\n    hasDocument,\n    isAudio\n  }\n};"
       },
-      "id": "54b146c1-5db5-4f36-a44f-752f850af2eb",
-      "name": "Process And Reply",
+      "id": "0e18bf42-b2b7-4fe5-91d6-9dd06ea2c92b",
+      "name": "Normalize Incoming",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        280
-      ]
+      "position": [480, 320]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.route}}",
+              "value2": "skip",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "31ab4983-a449-43d8-b31a-1c5bdbf1de30",
+      "name": "Skip Message?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 320]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: $json };"
+      },
+      "id": "4c2907fc-cd29-41f4-b17b-6a88605ca52c",
+      "name": "Finish Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.requiresHuman}}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "ca03fd3d-b4d0-42d9-812d-befae5e1090d",
+      "name": "Needs Human?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [980, 420]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nasync function notifyHuman(payload) {\n  const handoffWebhookUrl = process.env.HUMAN_HANDOFF_WEBHOOK_URL;\n  if (!handoffWebhookUrl) {\n    return null;\n  }\n\n  const response = await fetch(handoffWebhookUrl, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(payload)\n  });\n\n  const responseText = await response.text();\n  if (!response.ok) {\n    throw new Error(`Human handoff webhook failed: ${response.status} ${responseText}`);\n  }\n\n  return responseText;\n}\n\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\n\nconst replyMap = {\n  'image-review': 'Thanks for sharing that. I am forwarding this to a team member so they can review the image and help you properly.',\n  'document-review': 'I am forwarding this to a team member so they can review the document and help you properly.',\n  'visual-product-match': 'I cannot reliably verify product matches from a photo here, so I am forwarding this to a team member.',\n  'store-or-personal-details': 'I am forwarding this to a team member so they can confirm the exact store or account details for you.'\n};\n\nconst replyText = replyMap[$json.handoffReason] || 'I am forwarding this to a team member who can help you with this request.';\nconst handoffPayload = {\n  source: 'whatsapp-ai-auto-reply',\n  senderNumber: $json.senderNumber,\n  remoteJid: $json.remoteJid,\n  promptText: $json.promptText,\n  originalText: $json.originalText,\n  transcription: $json.transcription,\n  handoffReason: $json.handoffReason,\n  event: $json.event,\n  occurredAt: new Date().toISOString()\n};\n\nconst handoffResponse = await notifyHuman(handoffPayload);\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: $json.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: 'human-handoff',\n    senderNumber: $json.senderNumber,\n    handoffReason: $json.handoffReason,\n    promptText: $json.promptText,\n    replyText,\n    handoffPayload,\n    handoffResponse,\n    evolutionResponse: sendPayload\n  }\n};"
+      },
+      "id": "307514e9-0734-45f6-bf80-62461ee9c4a4",
+      "name": "Send Human Handoff Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1260, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.productIntent}}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "98059db0-56a1-41c5-8bf4-90e8a4ddff43",
+      "name": "Product Question?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1260, 520]
+    },
+    {
+      "parameters": {
+        "resource": "product",
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 3,
+        "options": {
+          "search": "={{$json.promptText}}",
+          "status": "publish"
+        }
+      },
+      "id": "4fd2b992-0f75-48c7-ae76-f12a4b7ee637",
+      "name": "WooCommerce Product Search",
+      "type": "n8n-nodes-base.wooCommerce",
+      "typeVersion": 1,
+      "position": [1520, 420],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nfunction stripHtml(value) {\n  return value ? value.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim() : '';\n}\n\nasync function notifyHuman(payload) {\n  const handoffWebhookUrl = process.env.HUMAN_HANDOFF_WEBHOOK_URL;\n  if (!handoffWebhookUrl) {\n    return null;\n  }\n\n  const response = await fetch(handoffWebhookUrl, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(payload)\n  });\n\n  const responseText = await response.text();\n  if (!response.ok) {\n    throw new Error(`Human handoff webhook failed: ${response.status} ${responseText}`);\n  }\n\n  return responseText;\n}\n\nconst original = $items('Product Question?', 0, 0)[0].json;\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\nconst openAiKey = ensureEnv('OPENAI_API_KEY');\n\nconst products = $input.all().map((item) => item.json).filter((product) => product && (product.id || product.name));\nlet replyText;\nlet handoffResponse = null;\n\nif (!products.length) {\n  replyText = 'I could not find an exact product match in the catalog right now, so I am forwarding this to a team member for a manual check.';\n  handoffResponse = await notifyHuman({\n    source: 'whatsapp-ai-auto-reply',\n    senderNumber: original.senderNumber,\n    remoteJid: original.remoteJid,\n    promptText: original.promptText,\n    originalText: original.originalText,\n    transcription: original.transcription,\n    handoffReason: 'no-product-match',\n    event: original.event,\n    occurredAt: new Date().toISOString()\n  });\n} else {\n  const businessContext = products\n    .map((product, index) => [\n      `${index + 1}. ${product.name}`,\n      `Price: ${product.price_html || product.price || product.regular_price || 'not available'}`,\n      `Stock: ${product.stock_status || 'unknown'}`,\n      product.short_description || product.description ? `Summary: ${stripHtml(product.short_description || product.description).slice(0, 220)}` : null,\n      product.permalink ? `Link: ${product.permalink}` : null\n    ].filter(Boolean).join('\\n'))\n    .join('\\n\\n');\n\n  const systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nSupport Malayalam, Manglish, English, Hindi, Tamil, and Kannada.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nUse only the catalog context provided.\nDo not invent prices, stock, delivery times, sizes, or URLs.\nIf exact business data is missing, say a team member will help.`;\n\n  const userPrompt = `Customer message:\n${original.promptText}\n\nCatalog context:\n${businessContext}`;\n\n  const chatResponse = await fetch('https://api.openai.com/v1/chat/completions', {\n    method: 'POST',\n    headers: { Authorization: `Bearer ${openAiKey}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      model: 'gpt-4o-mini',\n      temperature: 0.4,\n      messages: [\n        { role: 'system', content: systemPrompt },\n        { role: 'user', content: userPrompt }\n      ]\n    })\n  });\n\n  if (!chatResponse.ok) {\n    const errorText = await chatResponse.text();\n    throw new Error(`OpenAI reply generation failed: ${chatResponse.status} ${errorText}`);\n  }\n\n  const chatPayload = await chatResponse.json();\n  replyText = chatPayload.choices?.[0]?.message?.content?.trim();\n  if (!replyText) {\n    throw new Error('OpenAI returned an empty reply for the product branch');\n  }\n}\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: original.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: products.length ? 'product-replied' : 'product-handoff',\n    senderNumber: original.senderNumber,\n    promptText: original.promptText,\n    matchedProducts: products,\n    replyText,\n    handoffResponse,\n    evolutionResponse: sendPayload\n  }\n};"
+      },
+      "id": "88a3e80f-6680-4ae2-aa4d-bf42f09fcf60",
+      "name": "Send Product Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 420]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\nconst openAiKey = ensureEnv('OPENAI_API_KEY');\n\nconst systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nSupport Malayalam, Manglish, English, Hindi, Tamil, and Kannada.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nDo not invent store policies, order details, stock, prices, addresses, or customer-specific information.\nIf exact business data is required, say a team member will help.`;\n\nconst chatResponse = await fetch('https://api.openai.com/v1/chat/completions', {\n  method: 'POST',\n  headers: { Authorization: `Bearer ${openAiKey}`, 'Content-Type': 'application/json' },\n  body: JSON.stringify({\n    model: 'gpt-4o-mini',\n    temperature: 0.6,\n    messages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: $json.promptText }\n    ]\n  })\n});\n\nif (!chatResponse.ok) {\n  const errorText = await chatResponse.text();\n  throw new Error(`OpenAI reply generation failed: ${chatResponse.status} ${errorText}`);\n}\n\nconst chatPayload = await chatResponse.json();\nconst replyText = chatPayload.choices?.[0]?.message?.content?.trim();\nif (!replyText) {\n  throw new Error('OpenAI returned an empty reply for the general branch');\n}\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: $json.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: 'general-replied',\n    senderNumber: $json.senderNumber,\n    promptText: $json.promptText,\n    replyText,\n    evolutionResponse: sendPayload\n  }\n};"
+      },
+      "id": "35fd4f63-d1d0-4f9d-ab1e-bfd7f79bfe70",
+      "name": "Send General Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 620]
     }
   ],
   "pinData": {},
   "connections": {
     "Evolution Webhook": {
+      "main": [[{ "node": "Normalize Incoming", "type": "main", "index": 0 }]]
+    },
+    "Normalize Incoming": {
+      "main": [[{ "node": "Skip Message?", "type": "main", "index": 0 }]]
+    },
+    "Skip Message?": {
       "main": [
-        [
-          {
-            "node": "Process And Reply",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Finish Skipped", "type": "main", "index": 0 }],
+        [{ "node": "Needs Human?", "type": "main", "index": 0 }]
       ]
+    },
+    "Needs Human?": {
+      "main": [
+        [{ "node": "Send Human Handoff Reply", "type": "main", "index": 0 }],
+        [{ "node": "Product Question?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Product Question?": {
+      "main": [
+        [{ "node": "WooCommerce Product Search", "type": "main", "index": 0 }],
+        [{ "node": "Send General Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "WooCommerce Product Search": {
+      "main": [[{ "node": "Send Product Reply", "type": "main", "index": 0 }]]
     }
   },
   "active": false,

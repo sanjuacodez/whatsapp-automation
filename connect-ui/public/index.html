@@ -8,95 +8,143 @@
   </head>
   <body>
     <main class="shell">
-      <section class="hero card">
-        <div>
-          <p class="eyebrow">Local Control Panel</p>
-          <h1>WhatsApp Connect Console</h1>
-          <p class="lede">Use one page to refresh QR, get the 8-letter phone code, restore the Evolution webhook, and jump into n8n.</p>
+      <section class="hero-panel">
+        <div class="hero-copy">
+          <p class="eyebrow">WhatsApp Operations Dashboard</p>
+          <h1>Connect, recover, and monitor from one place.</h1>
+          <p class="lede">Use QR or phone pairing, restore the webhook, jump into n8n, and keep the WhatsApp instance healthy without leaving this screen.</p>
         </div>
         <div class="hero-actions">
           <a id="n8n-link" class="button primary" href="http://localhost:5678" target="_blank" rel="noreferrer">Open n8n</a>
           <a id="n8n-credentials-link" class="button" href="http://localhost:5678/home/credentials" target="_blank" rel="noreferrer">WooCommerce credentials</a>
-          <button id="refresh-all" class="button">Refresh status</button>
+          <button id="refresh-all" class="button ghost">Refresh dashboard</button>
         </div>
       </section>
 
-      <section class="grid">
-        <article class="card">
-          <div class="section-head">
-            <h2>Connection Status</h2>
+      <section class="status-strip">
+        <article class="metric-card">
+          <span class="metric-label">Instance</span>
+          <strong id="instance-name" class="metric-value">-</strong>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Connection</span>
+          <div class="metric-stack">
+            <strong id="state-value" class="metric-value">-</strong>
             <span id="status-badge" class="badge pending">Checking</span>
           </div>
-          <dl class="meta-list">
-            <div>
-              <dt>Instance</dt>
-              <dd id="instance-name">-</dd>
-            </div>
-            <div>
-              <dt>State</dt>
-              <dd id="state-value">-</dd>
-            </div>
-            <div>
-              <dt>Webhook</dt>
-              <dd id="webhook-value">-</dd>
-            </div>
-          </dl>
-          <div class="inline-actions">
-            <button id="restore-webhook" class="button">Restore webhook</button>
-            <button id="restore-settings" class="button">Restore settings</button>
-          </div>
-          <p id="status-message" class="hint"></p>
         </article>
-
-        <article class="card">
-          <div class="section-head">
-            <h2>Phone Number Pairing</h2>
-            <button id="refresh-connect" class="button small">Refresh code</button>
-          </div>
-          <p class="hint">If WhatsApp asks for an 8-character code, use this live value. It rotates.</p>
-          <div class="pairing-box" id="pairing-code">--------</div>
-          <form id="recreate-form" class="recreate-form">
-            <label for="phone-number">Reconnect with phone number</label>
-            <div class="inline-form">
-              <input id="phone-number" name="phone-number" type="text" placeholder="919876543210" inputmode="numeric">
-              <button type="submit" class="button primary">Recreate instance</button>
-            </div>
-          </form>
-          <p id="pairing-message" class="hint"></p>
+        <article class="metric-card wide">
+          <span class="metric-label">Webhook target</span>
+          <strong id="webhook-value" class="metric-value mono">-</strong>
         </article>
       </section>
 
-      <section class="grid">
-        <article class="card qr-card">
-          <div class="section-head">
-            <h2>QR Connect</h2>
-            <button id="refresh-qr" class="button small">Refresh QR</button>
+      <section class="dashboard-grid">
+        <article class="card connect-card">
+          <div class="section-head large">
+            <div>
+              <p class="section-kicker">Connection methods</p>
+              <h2>Pair WhatsApp</h2>
+            </div>
+            <div class="tab-list" role="tablist" aria-label="Connection method tabs">
+              <button id="tab-qr" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="panel-qr" data-tab="qr">QR scan</button>
+              <button id="tab-phone" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="panel-phone" data-tab="phone">Phone code</button>
+            </div>
           </div>
-          <div class="qr-shell">
-            <img id="qr-image" alt="WhatsApp QR code">
+
+          <div id="panel-qr" class="tab-panel active" role="tabpanel" aria-labelledby="tab-qr">
+            <div class="panel-actions">
+              <div>
+                <h3>Scan with Linked Devices</h3>
+                <p class="hint">Best for quick linking when the instance is not already open.</p>
+              </div>
+              <button id="refresh-qr" class="button small">Refresh QR</button>
+            </div>
+            <div class="qr-shell modern">
+              <img id="qr-image" alt="WhatsApp QR code">
+              <div id="qr-empty" class="empty-state">
+                <strong>No QR available right now</strong>
+                <p>If the connection is already open, Evolution stops returning a QR. Recreate the instance to pair a new device.</p>
+              </div>
+            </div>
+            <div class="instruction-list compact">
+              <p>How to use QR connect</p>
+              <ol>
+                <li>Open WhatsApp on the phone.</li>
+                <li>Go to Linked Devices.</li>
+                <li>Tap Link a Device.</li>
+                <li>Scan the code shown here.</li>
+              </ol>
+            </div>
           </div>
-          <p class="hint">WhatsApp mobile: Linked Devices -> Link a Device -> scan this QR.</p>
+
+          <div id="panel-phone" class="tab-panel" role="tabpanel" aria-labelledby="tab-phone" hidden>
+            <div class="panel-actions">
+              <div>
+                <h3>Use an 8-character pairing code</h3>
+                <p class="hint">Use this when WhatsApp asks for phone-number pairing instead of QR.</p>
+              </div>
+              <button id="refresh-connect" class="button small">Refresh code</button>
+            </div>
+            <div class="pairing-box" id="pairing-code">--------</div>
+            <form id="recreate-form" class="recreate-form">
+              <label for="phone-number">Switch device or regenerate pairing with a phone number</label>
+              <div class="inline-form">
+                <input id="phone-number" name="phone-number" type="text" placeholder="919876543210" inputmode="numeric">
+                <button type="submit" class="button primary">Recreate instance</button>
+              </div>
+            </form>
+            <p id="pairing-message" class="hint emphasis"></p>
+          </div>
         </article>
 
-        <article class="card">
-          <div class="section-head">
-            <h2>Useful Links</h2>
+        <article class="card operations-card">
+          <div class="section-head large">
+            <div>
+              <p class="section-kicker">Recovery and setup</p>
+              <h2>Operations</h2>
+            </div>
           </div>
-          <div class="link-list">
-            <a id="n8n-editor-link" href="http://localhost:5678" target="_blank" rel="noreferrer">n8n editor</a>
-            <a id="n8n-credentials-inline-link" href="http://localhost:5678/home/credentials" target="_blank" rel="noreferrer">n8n WooCommerce credentials</a>
-            <a href="http://localhost:8080" target="_blank" rel="noreferrer">Evolution API health</a>
-            <span id="webhook-target" class="mono"></span>
+          <p id="status-message" class="status-callout">Checking connection state.</p>
+          <div class="action-stack">
+            <button id="restore-webhook" class="button primary stretch">Restore webhook</button>
+            <button id="restore-settings" class="button stretch">Restore instance settings</button>
           </div>
-          <div class="steps">
-            <p>Recommended local flow:</p>
-            <ol>
-              <li>Refresh the QR or pairing code.</li>
-              <li>Connect WhatsApp using either method.</li>
-              <li>Wait for state to become <strong>open</strong>.</li>
-              <li>Open n8n to configure WooCommerce credentials and edit the workflow.</li>
-            </ol>
+          <div class="info-card">
+            <h3>Open in n8n</h3>
+            <div class="link-list">
+              <a id="n8n-editor-link" href="http://localhost:5678" target="_blank" rel="noreferrer">Workflow editor</a>
+              <a id="n8n-credentials-inline-link" href="http://localhost:5678/home/credentials" target="_blank" rel="noreferrer">WooCommerce credentials</a>
+              <a href="http://localhost:8080" target="_blank" rel="noreferrer">Evolution health</a>
+            </div>
           </div>
+          <div class="info-card webhook-card">
+            <h3>Webhook route</h3>
+            <p id="webhook-target" class="mono code-block"></p>
+          </div>
+        </article>
+      </section>
+
+      <section class="guide-grid">
+        <article class="card guide-card">
+          <p class="section-kicker">Recommended flow</p>
+          <h2>Connect in 4 steps</h2>
+          <ol class="guide-list">
+            <li>Pick QR scan or phone code from the tabs above.</li>
+            <li>Pair the WhatsApp account and wait until the connection shows <strong>open</strong>.</li>
+            <li>Use Restore webhook if the instance was recreated or the webhook was lost.</li>
+            <li>Open n8n to manage WooCommerce credentials, workflow logic, and execution history.</li>
+          </ol>
+        </article>
+
+        <article class="card guide-card subtle">
+          <p class="section-kicker">What to expect</p>
+          <h2>Refresh behavior</h2>
+          <ul class="note-list">
+            <li>When the instance is already connected, Evolution usually stops returning a QR or pairing code.</li>
+            <li>If you need a new pairing method, recreate the instance with the phone number field first.</li>
+            <li>Long webhook URLs are wrapped inside this dashboard so they do not break the layout.</li>
+          </ul>
         </article>
       </section>
     </main>

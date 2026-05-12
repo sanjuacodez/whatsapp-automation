@@ -9,7 +9,7 @@ This stack has four moving parts:
 - Evolution API keeps the WhatsApp session connected and receives incoming WhatsApp events.
 - Evolution forwards those events to the n8n production webhook at `/webhook/evolution-incoming`.
 - n8n runs the workflow in `workflows/whatsapp-ai-auto-reply.json`.
-- The workflow normalizes the incoming message, optionally transcribes audio with OpenAI Whisper, generates a reply with OpenAI, and sends the reply back through Evolution API.
+- The workflow normalizes the incoming message, optionally transcribes audio with OpenAI Whisper, routes the message, optionally fetches WooCommerce products with the native WooCommerce node, and sends either an AI reply or a human-handoff reply back through Evolution API.
 
 High-level flow:
 
@@ -124,8 +124,26 @@ The imported workflow currently does the following:
 - reads plain text messages
 - reads audio messages if Evolution includes an audio URL or base64 payload
 - transcribes audio using `whisper-1`
-- generates a reply using `gpt-4o-mini`
+- routes image-based requests, store/personal detail questions, and other unsupported cases to a human-handoff branch
+- fetches product matches with the native WooCommerce node when the message looks like a catalog question
+- generates AI replies using `gpt-4o-mini` for general chat and product-answer phrasing
 - sends the reply back through Evolution API
+
+## OpenAI integration
+
+OpenAI is currently used inside the n8n workflow Code nodes, not inside Evolution API.
+
+- audio messages are transcribed with `whisper-1`
+- text replies are generated with `gpt-4o-mini`
+- the model is used only after the workflow decides which branch should handle the message
+
+Where it lives now:
+
+- audio transcription starts in [workflows/whatsapp-ai-auto-reply.json](/Users/sanjayshankarm/whatsapp/workflows/whatsapp-ai-auto-reply.json)
+- product reply phrasing also happens in [workflows/whatsapp-ai-auto-reply.json](/Users/sanjayshankarm/whatsapp/workflows/whatsapp-ai-auto-reply.json)
+- general reply generation also happens in [workflows/whatsapp-ai-auto-reply.json](/Users/sanjayshankarm/whatsapp/workflows/whatsapp-ai-auto-reply.json)
+
+Important limitation: the model does not know real store facts, order facts, customer account details, location, or image contents unless n8n fetches or processes that data first. Without a data node before the AI step, the workflow should not answer those questions automatically.
 
 ## MVP behavior
 
@@ -136,6 +154,8 @@ The imported workflow currently does the following:
 - Supports text and audio inputs
 - Uses `gpt-4o-mini` for reply generation
 - Uses `whisper-1` for audio transcription
+- Uses a native WooCommerce node for product lookup
+- Sends unsupported queries to a human-handoff branch
 
 ## How to extend the workflow
 
@@ -189,6 +209,13 @@ Recommended pattern:
 - WooCommerce provides product, order, and customer data through its REST API
 - OpenAI is used only after n8n has gathered the required business context
 
+Current handling policy in this repo:
+
+- product questions: handled automatically through WooCommerce plus OpenAI phrasing
+- general conversational questions: handled by OpenAI with a constrained prompt
+- store details, account details, order/refund/tracking questions: routed to human handoff by default
+- image-based product matching and document review: routed to human handoff by default
+
 Example use cases:
 
 - customer asks for order status and n8n fetches the order from WooCommerce before replying
@@ -204,6 +231,23 @@ Recommended implementation for WooCommerce:
 5. Return a concise reply to the user.
 
 For production, avoid asking the model to guess order data. Always fetch real WooCommerce data first, then let the model phrase the response.
+
+## Human handoff
+
+If a request cannot be handled safely by automation, the workflow now replies with a short escalation message and can optionally notify a human endpoint.
+
+Add this environment variable to n8n if you want a real notification to another system:
+
+- `HUMAN_HANDOFF_WEBHOOK_URL`
+
+You can point that URL to:
+
+- another n8n workflow
+- a CRM or helpdesk intake webhook
+- Slack, Discord, or email bridge automation
+- a custom admin panel endpoint
+
+If `HUMAN_HANDOFF_WEBHOOK_URL` is empty, the customer still gets the handoff message, but no external notification is sent.
 
 ## Making this live on AWS or any server
 

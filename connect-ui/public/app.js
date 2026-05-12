@@ -6,12 +6,29 @@ const statusMessage = document.getElementById('status-message');
 const pairingCode = document.getElementById('pairing-code');
 const pairingMessage = document.getElementById('pairing-message');
 const qrImage = document.getElementById('qr-image');
+const qrEmpty = document.getElementById('qr-empty');
 const webhookTarget = document.getElementById('webhook-target');
 const n8nLink = document.getElementById('n8n-link');
 const n8nEditorLink = document.getElementById('n8n-editor-link');
 const n8nCredentialsLink = document.getElementById('n8n-credentials-link');
 const n8nCredentialsInlineLink = document.getElementById('n8n-credentials-inline-link');
 const phoneNumberInput = document.getElementById('phone-number');
+const tabButtons = Array.from(document.querySelectorAll('[data-tab]'));
+const tabPanels = Array.from(document.querySelectorAll('.tab-panel'));
+
+function setTab(tabName) {
+  tabButtons.forEach((button) => {
+    const isActive = button.dataset.tab === tabName;
+    button.classList.toggle('active', isActive);
+    button.setAttribute('aria-selected', String(isActive));
+  });
+
+  tabPanels.forEach((panel) => {
+    const isActive = panel.id === `panel-${tabName}`;
+    panel.classList.toggle('active', isActive);
+    panel.hidden = !isActive;
+  });
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -37,6 +54,20 @@ function setBadge(state) {
   }
 }
 
+function setStatusText(state) {
+  if (state === 'open') {
+    statusMessage.textContent = 'WhatsApp is connected. QR and pairing code may disappear until you recreate the instance for a new pairing.';
+    return;
+  }
+
+  if (state === 'connecting') {
+    statusMessage.textContent = 'Connection is in progress. Refresh the active tab if you are waiting for a new QR or phone pairing code.';
+    return;
+  }
+
+  statusMessage.textContent = 'Connection is not open. Use QR scan or phone code, then restore the webhook if the instance was recreated.';
+}
+
 async function loadConfig() {
   const config = await api('/api/config');
   instanceName.textContent = config.instanceName;
@@ -53,24 +84,30 @@ async function loadStatus() {
   const state = payload.instance?.state || 'unknown';
   stateValue.textContent = state;
   setBadge(state);
-
-  if (state === 'open') {
-    statusMessage.textContent = 'WhatsApp is connected. You can open n8n and test a real message.';
-  } else if (state === 'connecting') {
-    statusMessage.textContent = 'Connection is in progress. If it hangs, refresh the pairing code or recreate the instance with the phone number.';
-  } else {
-    statusMessage.textContent = 'Connection is not open. Use the QR or the 8-letter code to link again.';
-  }
+  setStatusText(state);
+  return state;
 }
 
 async function loadConnect() {
   const payload = await api('/api/connect');
-  pairingCode.textContent = payload.pairingCode || '--------';
-  qrImage.src = payload.base64 || '';
-  qrImage.hidden = !payload.base64;
-  pairingMessage.textContent = payload.pairingCode
-    ? 'Use this live code if WhatsApp asks for phone-number pairing.'
-    : 'No phone pairing code is available yet. Refresh again or recreate the instance.';
+  const state = String(payload.state || 'unknown').toLowerCase();
+  const livePairingCode = payload.pairingCode || '--------';
+  const liveQrCode = payload.qrCode || '';
+
+  pairingCode.textContent = livePairingCode;
+  qrImage.src = liveQrCode;
+  qrImage.hidden = !liveQrCode;
+  qrEmpty.hidden = Boolean(liveQrCode);
+
+  if (payload.pairingCode) {
+    pairingMessage.textContent = 'Use this live 8-character code if WhatsApp asks for phone-number pairing.';
+  } else if (state === 'open') {
+    pairingMessage.textContent = 'No pairing code is shown because the instance is already connected. Recreate the instance to generate a new one.';
+  } else {
+    pairingMessage.textContent = 'No phone pairing code is available yet. Refresh again or recreate the instance with the phone number.';
+  }
+
+  return payload;
 }
 
 async function refreshAll() {
@@ -82,8 +119,33 @@ async function refreshAll() {
 }
 
 document.getElementById('refresh-all').addEventListener('click', refreshAll);
-document.getElementById('refresh-connect').addEventListener('click', loadConnect);
-document.getElementById('refresh-qr').addEventListener('click', loadConnect);
+document.getElementById('refresh-connect').addEventListener('click', async () => {
+  setTab('phone');
+  pairingMessage.textContent = 'Refreshing phone pairing details...';
+  try {
+    await loadConnect();
+  } catch (error) {
+    pairingMessage.textContent = error.message;
+  }
+});
+
+document.getElementById('refresh-qr').addEventListener('click', async () => {
+  setTab('qr');
+  statusMessage.textContent = 'Refreshing QR details...';
+  try {
+    await loadConnect();
+    const payload = await api('/api/status');
+    setStatusText(payload.instance?.state || 'unknown');
+  } catch (error) {
+    statusMessage.textContent = error.message;
+  }
+});
+
+tabButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    setTab(button.dataset.tab);
+  });
+});
 
 document.getElementById('restore-webhook').addEventListener('click', async () => {
   try {
@@ -117,12 +179,15 @@ document.getElementById('recreate-form').addEventListener('submit', async (event
       method: 'POST',
       body: JSON.stringify({ number })
     });
+    setTab('phone');
     pairingMessage.textContent = 'Instance recreated. Refreshing connection details...';
     await refreshAll();
   } catch (error) {
     pairingMessage.textContent = error.message;
   }
 });
+
+setTab('qr');
 
 Promise.all([loadConfig(), refreshAll()]).catch((error) => {
   statusMessage.textContent = error.message;

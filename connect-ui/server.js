@@ -11,6 +11,43 @@ const n8nWebhookUrl = process.env.N8N_WEBHOOK_URL || 'http://host.docker.interna
 const n8nCredentialsUrl = `${n8nEditorBaseUrl.replace(/\/$/, '')}/home/credentials`;
 const publicDir = path.join(__dirname, 'public');
 
+function extractPairingCode(payload) {
+  return payload?.pairingCode
+    || payload?.code
+    || payload?.pairing?.code
+    || payload?.pairing?.pairingCode
+    || payload?.instance?.pairingCode
+    || null;
+}
+
+function normalizeQrValue(value) {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+
+  if (value.startsWith('data:image')) {
+    return value;
+  }
+
+  if (/^[A-Za-z0-9+/=]+$/.test(value)) {
+    return `data:image/png;base64,${value}`;
+  }
+
+  return null;
+}
+
+function extractQrCode(payload) {
+  return normalizeQrValue(
+    payload?.base64
+      || payload?.qrcode?.base64
+      || payload?.qrcode
+      || payload?.qr?.base64
+      || payload?.qr
+      || payload?.instance?.base64
+      || null
+  );
+}
+
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -90,7 +127,10 @@ function parseRequestBody(request) {
 
 async function handleApi(request, response) {
   try {
-    if (request.url === '/api/config' && request.method === 'GET') {
+    const requestUrl = new URL(request.url, 'http://localhost');
+    const pathname = requestUrl.pathname;
+
+    if (pathname === '/api/config' && request.method === 'GET') {
       sendJson(response, 200, {
         instanceName: evolutionInstance,
         n8nEditorBaseUrl,
@@ -100,19 +140,25 @@ async function handleApi(request, response) {
       return;
     }
 
-    if (request.url === '/api/status' && request.method === 'GET') {
+    if (pathname === '/api/status' && request.method === 'GET') {
       const payload = await requestEvolution(`/instance/connectionState/${evolutionInstance}`);
       sendJson(response, 200, payload);
       return;
     }
 
-    if (request.url === '/api/connect' && request.method === 'GET') {
+    if (pathname === '/api/connect' && request.method === 'GET') {
       const payload = await requestEvolution(`/instance/connect/${evolutionInstance}`);
-      sendJson(response, 200, payload);
+      sendJson(response, 200, {
+        raw: payload,
+        instance: payload.instance || null,
+        state: payload.instance?.state || 'unknown',
+        pairingCode: extractPairingCode(payload),
+        qrCode: extractQrCode(payload)
+      });
       return;
     }
 
-    if (request.url === '/api/webhook/restore' && request.method === 'POST') {
+    if (pathname === '/api/webhook/restore' && request.method === 'POST') {
       const payload = await requestEvolution(`/webhook/set/${evolutionInstance}`, {
         method: 'POST',
         body: JSON.stringify({
@@ -129,7 +175,7 @@ async function handleApi(request, response) {
       return;
     }
 
-    if (request.url === '/api/settings/restore' && request.method === 'POST') {
+    if (pathname === '/api/settings/restore' && request.method === 'POST') {
       const payload = await requestEvolution(`/settings/set/${evolutionInstance}`, {
         method: 'POST',
         body: JSON.stringify({
@@ -146,7 +192,7 @@ async function handleApi(request, response) {
       return;
     }
 
-    if (request.url === '/api/instance/recreate' && request.method === 'POST') {
+    if (pathname === '/api/instance/recreate' && request.method === 'POST') {
       const body = await parseRequestBody(request);
       const phoneNumber = String(body.number || '').trim();
       if (!phoneNumber) {
@@ -191,12 +237,14 @@ async function handleApi(request, response) {
 }
 
 const server = http.createServer((request, response) => {
-  if (request.url.startsWith('/api/')) {
+  const requestUrl = new URL(request.url, 'http://localhost');
+
+  if (requestUrl.pathname.startsWith('/api/')) {
     handleApi(request, response);
     return;
   }
 
-  const requestedPath = request.url === '/' ? '/index.html' : request.url;
+  const requestedPath = requestUrl.pathname === '/' ? '/index.html' : requestUrl.pathname;
   const filePath = path.normalize(path.join(publicDir, requestedPath));
 
   if (!filePath.startsWith(publicDir)) {
