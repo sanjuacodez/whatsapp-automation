@@ -1,0 +1,59 @@
+{
+  "name": "WhatsApp AI Auto Reply",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "evolution-incoming",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "7eecfc83-f1ea-4612-9145-0a7d067577f4",
+      "webhookId": "evolution-incoming",
+      "name": "Evolution Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        260,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const payload = $json.body ?? $json;\n\nfunction firstDefined(...values) {\n  return values.find((value) => value !== undefined && value !== null);\n}\n\nfunction normalizeText(message) {\n  return firstDefined(\n    message?.conversation,\n    message?.extendedTextMessage?.text,\n    message?.imageMessage?.caption,\n    message?.videoMessage?.caption,\n    message?.documentMessage?.caption,\n    ''\n  );\n}\n\nfunction extractAudio(message) {\n  return {\n    url: firstDefined(message?.audioMessage?.url, message?.pttMessage?.url, null),\n    base64: firstDefined(message?.audioMessage?.base64, message?.pttMessage?.base64, null),\n    mimeType: firstDefined(message?.audioMessage?.mimetype, message?.pttMessage?.mimetype, 'audio/ogg')\n  };\n}\n\nfunction stripHtml(value) {\n  return value ? value.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim() : '';\n}\n\nfunction detectProductIntent(value) {\n  if (!value) {\n    return false;\n  }\n\n  return /(product|products|price|cost|stock|available|availability|catalog|item|buy|purchase|details)/i.test(value);\n}\n\nasync function fetchWooCommerceProducts(query, baseUrl, consumerKey, consumerSecret) {\n  const endpoint = new URL(`${baseUrl.replace(/\\/$/, '')}/wp-json/wc/v3/products`);\n  endpoint.searchParams.set('search', query);\n  endpoint.searchParams.set('per_page', '3');\n  endpoint.searchParams.set('status', 'publish');\n\n  const credentials = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');\n  const response = await fetch(endpoint, {\n    headers: {\n      Authorization: `Basic ${credentials}`\n    }\n  });\n\n  if (!response.ok) {\n    const errorText = await response.text();\n    throw new Error(`WooCommerce product lookup failed: ${response.status} ${errorText}`);\n  }\n\n  const products = await response.json();\n  if (!Array.isArray(products)) {\n    return [];\n  }\n\n  return products.map((product) => ({\n    id: product.id,\n    name: product.name,\n    price: product.price_html || product.price || product.regular_price || '',\n    stockStatus: product.stock_status || 'unknown',\n    permalink: product.permalink || '',\n    shortDescription: stripHtml(product.short_description || product.description || '').slice(0, 220)\n  }));\n}\n\nfunction formatProductContext(products) {\n  if (!products.length) {\n    return 'WooCommerce product lookup returned no matching products.';\n  }\n\n  return products\n    .map((product, index) => [\n      `${index + 1}. ${product.name}`,\n      `Price: ${product.price || 'not available'}`,\n      `Stock: ${product.stockStatus}`,\n      product.shortDescription ? `Summary: ${product.shortDescription}` : null,\n      product.permalink ? `Link: ${product.permalink}` : null\n    ].filter(Boolean).join('\\n'))\n    .join('\\n\\n');\n}\n\nconst event = firstDefined(payload?.event, payload?.type, payload?.data?.event, 'unknown');\nconst data = firstDefined(payload?.data, payload);\nconst key = firstDefined(data?.key, data?.message?.key, data?.messages?.[0]?.key, {});\nconst message = firstDefined(data?.message, data?.messages?.[0]?.message, {});\nconst remoteJid = firstDefined(key?.remoteJid, data?.remoteJid, '');\nconst fromMe = Boolean(firstDefined(key?.fromMe, data?.fromMe, false));\nconst isGroup = remoteJid.endsWith('@g.us');\nconst isStatus = remoteJid === 'status@broadcast';\nconst senderNumber = remoteJid.replace(/@.+$/, '').replace(/\\D/g, '');\nconst text = normalizeText(message).trim();\nconst audio = extractAudio(message);\nconst isAudio = Boolean(audio.url || audio.base64);\n\nif (fromMe || isGroup || isStatus) {\n  return {\n    json: {\n      action: 'skipped',\n      reason: 'self-group-or-status',\n      event,\n      remoteJid\n    }\n  };\n}\n\nif (!text && !isAudio) {\n  return {\n    json: {\n      action: 'skipped',\n      reason: 'no-text-or-audio',\n      event,\n      remoteJid\n    }\n  };\n}\n\nconst openAiKey = process.env.OPENAI_API_KEY;\nconst evolutionApiKey = process.env.EVOLUTION_API_KEY;\nconst evolutionInstance = process.env.EVOLUTION_INSTANCE;\nconst evolutionServerUrl = process.env.EVOLUTION_SERVER_URL;\nconst wooCommerceBaseUrl = process.env.WOOCOMMERCE_BASE_URL;\nconst wooCommerceConsumerKey = process.env.WOOCOMMERCE_CONSUMER_KEY;\nconst wooCommerceConsumerSecret = process.env.WOOCOMMERCE_CONSUMER_SECRET;\nconst hasWooCommerceConfig = Boolean(wooCommerceBaseUrl && wooCommerceConsumerKey && wooCommerceConsumerSecret);\n\nif (!openAiKey) {\n  throw new Error('OPENAI_API_KEY is missing in the n8n environment');\n}\nif (!evolutionApiKey) {\n  throw new Error('EVOLUTION_API_KEY is missing in the n8n environment');\n}\nif (!evolutionInstance) {\n  throw new Error('EVOLUTION_INSTANCE is missing in the n8n environment');\n}\nif (!evolutionServerUrl) {\n  throw new Error('EVOLUTION_SERVER_URL is missing in the n8n environment');\n}\n\nlet promptText = text;\nlet transcription = null;\n\nif (isAudio) {\n  let audioBuffer;\n\n  if (audio.base64) {\n    const normalizedBase64 = audio.base64.includes(',')\n      ? audio.base64.split(',').pop()\n      : audio.base64;\n    audioBuffer = Buffer.from(normalizedBase64, 'base64');\n  } else {\n    const audioResponse = await fetch(audio.url);\n    if (!audioResponse.ok) {\n      throw new Error(`Failed to download audio: ${audioResponse.status} ${audioResponse.statusText}`);\n    }\n    audioBuffer = Buffer.from(await audioResponse.arrayBuffer());\n  }\n\n  const formData = new FormData();\n  const extension = audio.mimeType.includes('mpeg') ? 'mp3' : audio.mimeType.includes('mp4') ? 'm4a' : 'ogg';\n  formData.append('file', new Blob([audioBuffer], { type: audio.mimeType }), `voice-note.${extension}`);\n  formData.append('model', 'whisper-1');\n\n  const transcriptionResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {\n    method: 'POST',\n    headers: {\n      Authorization: `Bearer ${openAiKey}`\n    },\n    body: formData\n  });\n\n  if (!transcriptionResponse.ok) {\n    const errorText = await transcriptionResponse.text();\n    throw new Error(`Whisper transcription failed: ${transcriptionResponse.status} ${errorText}`);\n  }\n\n  const transcriptionPayload = await transcriptionResponse.json();\n  transcription = transcriptionPayload.text?.trim() ?? '';\n  promptText = transcription;\n  console.log('[whatsapp-ai] transcription', { senderNumber, transcription });\n}\n\nif (!promptText) {\n  return {\n    json: {\n      action: 'skipped',\n      reason: 'empty-prompt-after-normalization',\n      event,\n      remoteJid\n    }\n  };\n}\n\nconst productIntent = detectProductIntent(promptText);\nlet matchedProducts = [];\nlet businessContext = '';\n\nif (productIntent && hasWooCommerceConfig) {\n  matchedProducts = await fetchWooCommerceProducts(\n    promptText,\n    wooCommerceBaseUrl,\n    wooCommerceConsumerKey,\n    wooCommerceConsumerSecret\n  );\n  businessContext = formatProductContext(matchedProducts);\n}\n\nconst systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nSupport Malayalam, Manglish, English, Hindi, Tamil, and Kannada.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nDo not use formal business language unless user speaks formally.\nIf user sends Malayalam, reply in Malayalam.\nIf user sends Manglish, reply in Manglish.\nIf business context is provided, use only that business context for product facts and do not invent prices, stock, or URLs.`;\n\nconst userPrompt = businessContext\n  ? `Customer message:\n${promptText}\n\nBusiness context:\n${businessContext}\n\nUse the business context when answering product questions. If no matching products were found, ask a short follow-up question.`\n  : promptText;\n\nconst chatResponse = await fetch('https://api.openai.com/v1/chat/completions', {\n  method: 'POST',\n  headers: {\n    Authorization: `Bearer ${openAiKey}`,\n    'Content-Type': 'application/json'\n  },\n  body: JSON.stringify({\n    model: 'gpt-4o-mini',\n    temperature: 0.6,\n    messages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: userPrompt }\n    ]\n  })\n});\n\nif (!chatResponse.ok) {\n  const errorText = await chatResponse.text();\n  throw new Error(`OpenAI reply generation failed: ${chatResponse.status} ${errorText}`);\n}\n\nconst chatPayload = await chatResponse.json();\nconst replyText = chatPayload.choices?.[0]?.message?.content?.trim();\n\nif (!replyText) {\n  throw new Error('OpenAI returned an empty reply');\n}\n\nconsole.log('[whatsapp-ai] incoming', { senderNumber, promptText, productIntent, matchedProducts: matchedProducts.length });\nconsole.log('[whatsapp-ai] reply', { senderNumber, replyText });\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: {\n    apikey: evolutionApiKey,\n    'Content-Type': 'application/json'\n  },\n  body: JSON.stringify({\n    number: senderNumber,\n    text: replyText\n  })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\n\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: 'replied',\n    event,\n    remoteJid,\n    senderNumber,\n    promptText,\n    transcription,\n    productIntent,\n    matchedProducts,\n    replyText,\n    evolutionResponse: sendPayload\n  }\n};"
+      },
+      "id": "54b146c1-5db5-4f36-a44f-752f850af2eb",
+      "name": "Process And Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        280
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Evolution Webhook": {
+      "main": [
+        [
+          {
+            "node": "Process And Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f18e01c5-4a32-4e98-bb44-828885da3f13",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "whatsapp-ai-auto-reply"
+}
