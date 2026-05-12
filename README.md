@@ -164,11 +164,23 @@ Right now the logic is intentionally compact so the MVP is easy to import and ru
 
 Yes, WooCommerce is a good fit for n8n integration.
 
+Preferred approach for live servers: configure WooCommerce inside n8n Credentials and use the native WooCommerce node or an HTTP Request node with a predefined WooCommerce credential. This makes server setup easier because store credentials stay in n8n instead of being copied into server environment files.
+
 The repo now includes the first product-info hook in the workflow:
 
 - product-related messages can trigger a WooCommerce product lookup before the AI reply is generated
 - WooCommerce lookup is optional and only runs when `WOOCOMMERCE_BASE_URL`, `WOOCOMMERCE_CONSUMER_KEY`, and `WOOCOMMERCE_CONSUMER_SECRET` are configured in n8n
 - when WooCommerce returns product matches, the AI is instructed to use those product facts instead of inventing prices or stock
+
+Recommended live-server configuration path:
+
+1. Open n8n.
+2. Create a WooCommerce credential in n8n Credentials.
+3. Point it to your store URL and enter the consumer key and secret there.
+4. Use the native WooCommerce node for product or order fetches.
+5. Keep server `.env` focused on infrastructure settings like OpenAI, Evolution, URLs, and ports.
+
+Current repo state: the working MVP still includes an environment-variable-based WooCommerce fallback in the Code node for local convenience. For production, the recommended next refactor is to move the product lookup branch into native n8n nodes so WooCommerce setup is entirely UI-driven.
 
 Recommended pattern:
 

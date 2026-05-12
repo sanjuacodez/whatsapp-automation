@@ -9,6 +9,8 @@ const qrImage = document.getElementById('qr-image');
 const webhookTarget = document.getElementById('webhook-target');
 const n8nLink = document.getElementById('n8n-link');
 const n8nEditorLink = document.getElementById('n8n-editor-link');
+const n8nCredentialsLink = document.getElementById('n8n-credentials-link');
+const n8nCredentialsInlineLink = document.getElementById('n8n-credentials-inline-link');
 const phoneNumberInput = document.getElementById('phone-number');
 
 async function api(path, options = {}) {
@@ -42,6 +44,8 @@ async function loadConfig() {
   webhookTarget.textContent = config.webhookTarget;
   n8nLink.href = config.n8nEditorBaseUrl;
   n8nEditorLink.href = config.n8nEditorBaseUrl;
+  n8nCredentialsLink.href = config.n8nCredentialsUrl;
+  n8nCredentialsInlineLink.href = config.n8nCredentialsUrl;
 }
 
 async function loadStatus() {

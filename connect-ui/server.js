@@ -8,6 +8,7 @@ const evolutionApiKey = process.env.EVOLUTION_API_KEY || '';
 const evolutionInstance = process.env.EVOLUTION_INSTANCE || 'local-whatsapp';
 const n8nEditorBaseUrl = process.env.N8N_EDITOR_BASE_URL || 'http://localhost:5678';
 const n8nWebhookUrl = process.env.N8N_WEBHOOK_URL || 'http://host.docker.internal:5678/';
+const n8nCredentialsUrl = `${n8nEditorBaseUrl.replace(/\/$/, '')}/home/credentials`;
 const publicDir = path.join(__dirname, 'public');
 
 function sendJson(response, statusCode, payload) {
@@ -93,6 +94,7 @@ async function handleApi(request, response) {
       sendJson(response, 200, {
         instanceName: evolutionInstance,
         n8nEditorBaseUrl,
+        n8nCredentialsUrl,
         webhookTarget: `${n8nWebhookUrl.replace(/\/$/, '')}/webhook/evolution-incoming`
       });
       return;
