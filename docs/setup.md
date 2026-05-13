@@ -47,6 +47,12 @@ In n8n:
 4. Save the workflow.
 5. Activate the workflow after webhook setup is complete.
 
+Before importing on a fresh machine, bootstrap the native credentials so the workflow bindings already exist:
+
+```bash
+./scripts/bootstrap-n8n-credentials.sh
+```
+
 ## 5. Create and connect the Evolution instance
 
 Follow [webhook-configuration.md](webhook-configuration.md) to:

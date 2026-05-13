@@ -23,11 +23,17 @@ High-level flow:
 ## What this repo contains
 
 - `docker-compose.yml` for the local stack
+- `docker-compose.ec2.yml` as the hardened EC2 production override
 - `.env.example` for environment variables
+- `deploy/Caddyfile.ec2` as the ready-to-use production Caddy reverse proxy file
+- `scripts/bootstrap-n8n-credentials.sh` to create or update native n8n credentials from the container environment
 - `workflows/whatsapp-ai-auto-reply.json` as the importable n8n workflow
 - `docs/setup.md` for setup and startup
 - `docs/webhook-configuration.md` for Evolution instance and webhook setup
 - `docs/openai-setup.md` for OpenAI requirements and verification
+- `docs/current-state.md` for the latest verified local state snapshot
+- `docs/live-deployment.md` for server sizing and migration guidance
+- `docs/aws-ec2-deployment.md` for the full AWS EC2, Docker, domain, HTTPS, and credential setup guide
 
 ## Services
 
@@ -75,6 +81,43 @@ Use the detailed guides here:
 - [docs/setup.md](docs/setup.md)
 - [docs/webhook-configuration.md](docs/webhook-configuration.md)
 - [docs/openai-setup.md](docs/openai-setup.md)
+- [docs/current-state.md](docs/current-state.md)
+- [docs/live-deployment.md](docs/live-deployment.md)
+- [docs/aws-ec2-deployment.md](docs/aws-ec2-deployment.md)
+
+## Public GitHub repo guidance
+
+This repository is designed to be safe for a public GitHub repo only if you keep real secrets out of git.
+
+Commit only:
+
+- source code
+- `docker-compose.yml`
+- `.env.example`
+- workflow JSON exports without embedded secrets
+- scripts and docs
+
+Do not commit:
+
+- `.env`
+- SSH keys such as `.pem`
+- live WooCommerce keys
+- live OpenAI keys
+- exported n8n credentials
+- database files or backups
+
+Configuration split:
+
+- infrastructure/runtime values belong in the server `.env`
+- OpenAI and WooCommerce should be created as native n8n credentials or bootstrapped from the server `.env`
+- Connect UI is used for WhatsApp pairing, webhook restore, and quick navigation, not as a secret store
+
+For the full production walkthrough, including AWS EC2 creation and domain setup, use [docs/aws-ec2-deployment.md](docs/aws-ec2-deployment.md).
+
+For EC2 production deployments, the repo also includes:
+
+- [docker-compose.ec2.yml](/Users/sanjayshankarm/whatsapp/docker-compose.ec2.yml) to bind service ports to `127.0.0.1`, enable n8n basic auth, and add basic container hardening
+- [deploy/Caddyfile.ec2](/Users/sanjayshankarm/whatsapp/deploy/Caddyfile.ec2) to front `n8n` and `connect-ui` with HTTPS through Caddy
 
 ## How to connect your WhatsApp
 
@@ -124,7 +167,10 @@ The imported workflow currently does the following:
 - reads plain text messages
 - reads audio messages if Evolution includes an audio URL or base64 payload
 - transcribes audio using `whisper-1`
-- routes image-based requests, store/personal detail questions, and other unsupported cases to a human-handoff branch
+- routes image-based requests, refund/account requests, and other unsupported cases to a human-handoff branch
+- handles store-info questions through a dedicated store-info branch before handoff
+- handles payment-option questions through a dedicated payment-info branch before handoff
+- handles order-status questions through a native WooCommerce order lookup branch before handoff
 - fetches product matches with the native WooCommerce node when the message looks like a catalog question
 - generates AI replies using `gpt-4o-mini` for general chat and product-answer phrasing
 - sends the reply back through Evolution API
@@ -132,6 +178,12 @@ The imported workflow currently does the following:
 ## OpenAI integration
 
 OpenAI is currently used inside the n8n workflow Code nodes, not inside Evolution API.
+
+Current status in this repo:
+
+- product reply generation now uses the native n8n OpenAI node with the native `OpenAI account` credential
+- general reply generation now uses the native n8n OpenAI node with the native `OpenAI account` credential
+- audio transcription in `Normalize Incoming` still uses a direct OpenAI Whisper API call from a Code node and still depends on `OPENAI_API_KEY` in the n8n container environment
 
 - audio messages are transcribed with `whisper-1`
 - text replies are generated with `gpt-4o-mini`
@@ -155,7 +207,7 @@ Important limitation: the model does not know real store facts, order facts, cus
 - Uses `gpt-4o-mini` for reply generation
 - Uses `whisper-1` for audio transcription
 - Uses a native WooCommerce node for product lookup
-- Sends unsupported queries to a human-handoff branch
+- Sends only unsupported or unsafe queries to a human-handoff branch
 
 ## How to extend the workflow
 
@@ -186,6 +238,21 @@ Yes, WooCommerce is a good fit for n8n integration.
 
 Preferred approach for live servers: configure WooCommerce inside n8n Credentials and use the native WooCommerce node or an HTTP Request node with a predefined WooCommerce credential. This makes server setup easier because store credentials stay in n8n instead of being copied into server environment files.
 
+For the local `woo.local` setup in this repo, the n8n container defaults `N8N_NODE_TLS_REJECT_UNAUTHORIZED=0` so the WooCommerce node can talk to a self-signed local HTTPS certificate. On a live server with a valid certificate, set `N8N_NODE_TLS_REJECT_UNAUTHORIZED=1`.
+
+This repo now also includes a credential bootstrap script:
+
+```bash
+./scripts/bootstrap-n8n-credentials.sh
+```
+
+That script creates or updates the native n8n credentials with the fixed IDs expected by the workflow export:
+
+- OpenAI account: `2ea268dd-5fb0-4080-93f3-3eb29188656c`
+- WooCommerce account: `c1hDGmnfjhyGQV5Q`
+
+This makes live-server migration easier because you can keep the workflow export stable and recreate the required native credentials from server environment variables before importing or activating the workflow.
+
 The repo now includes the first product-info hook in the workflow:
 
 - product-related messages can trigger a WooCommerce product lookup before the AI reply is generated
@@ -213,7 +280,10 @@ Current handling policy in this repo:
 
 - product questions: handled automatically through WooCommerce plus OpenAI phrasing
 - general conversational questions: handled by OpenAI with a constrained prompt
-- store details, account details, order/refund/tracking questions: routed to human handoff by default
+- store-info questions: handled through a dedicated branch with constrained store-context phrasing
+- payment-option questions: handled through a dedicated branch with constrained payment-context phrasing
+- order-status questions: handled automatically through WooCommerce order lookup plus OpenAI phrasing
+- account/refund questions: routed to human handoff by default
 - image-based product matching and document review: routed to human handoff by default
 
 Example use cases:
@@ -250,6 +320,8 @@ You can point that URL to:
 If `HUMAN_HANDOFF_WEBHOOK_URL` is empty, the customer still gets the handoff message, but no external notification is sent.
 
 ## Making this live on AWS or any server
+
+See [docs/live-deployment.md](docs/live-deployment.md) for the detailed migration checklist and server recommendations.
 
 This can run on AWS, a VPS, or any Linux server as long as Docker is available and the server can expose HTTPS endpoints.
 

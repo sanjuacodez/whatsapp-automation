@@ -1,2 +1,19 @@
 .env
+.env.*
+!.env.example
 .generated/
+
+# Local credentials, exports, and deployment artifacts
+*.pem
+*.p12
+*.pfx
+*.crt
+*.key
+*.sqlite
+*.bak
+*.backup
+
+# Local runtime data or manual exports
+backups/
+exports/
+data/

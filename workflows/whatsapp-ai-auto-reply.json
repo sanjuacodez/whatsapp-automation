@@ -18,7 +18,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const payload = $json.body ?? $json;\n\nfunction firstDefined(...values) {\n  return values.find((value) => value !== undefined && value !== null);\n}\n\nfunction normalizeText(message) {\n  return firstDefined(\n    message?.conversation,\n    message?.extendedTextMessage?.text,\n    message?.imageMessage?.caption,\n    message?.videoMessage?.caption,\n    message?.documentMessage?.caption,\n    ''\n  );\n}\n\nfunction extractAudio(message) {\n  return {\n    url: firstDefined(message?.audioMessage?.url, message?.pttMessage?.url, null),\n    base64: firstDefined(message?.audioMessage?.base64, message?.pttMessage?.base64, null),\n    mimeType: firstDefined(message?.audioMessage?.mimetype, message?.pttMessage?.mimetype, 'audio/ogg')\n  };\n}\n\nfunction detectProductIntent(value) {\n  return /(product|products|price|cost|stock|available|availability|catalog|item|buy|purchase|details)/i.test(value || '');\n}\n\nconst event = firstDefined(payload?.event, payload?.type, payload?.data?.event, 'unknown');\nconst data = firstDefined(payload?.data, payload);\nconst key = firstDefined(data?.key, data?.message?.key, data?.messages?.[0]?.key, {});\nconst message = firstDefined(data?.message, data?.messages?.[0]?.message, {});\nconst remoteJid = firstDefined(key?.remoteJid, data?.remoteJid, '');\nconst fromMe = Boolean(firstDefined(key?.fromMe, data?.fromMe, false));\nconst isGroup = remoteJid.endsWith('@g.us');\nconst isStatus = remoteJid === 'status@broadcast';\nconst senderNumber = remoteJid.replace(/@.+$/, '').replace(/\\D/g, '');\nconst text = normalizeText(message).trim();\nconst audio = extractAudio(message);\nconst isAudio = Boolean(audio.url || audio.base64);\nconst hasImage = Boolean(message?.imageMessage);\nconst hasDocument = Boolean(message?.documentMessage);\n\nif (fromMe || isGroup || isStatus) {\n  return { json: { action: 'skipped', reason: 'self-group-or-status', route: 'skip', event, remoteJid } };\n}\n\nif (!senderNumber) {\n  return { json: { action: 'skipped', reason: 'missing-sender-number', route: 'skip', event, remoteJid } };\n}\n\nif (!text && !isAudio) {\n  return { json: { action: 'skipped', reason: 'no-text-or-audio', route: 'skip', event, remoteJid } };\n}\n\nlet promptText = text;\nlet transcription = null;\n\nif (isAudio) {\n  const openAiKey = process.env.OPENAI_API_KEY;\n  if (!openAiKey) {\n    throw new Error('OPENAI_API_KEY is missing in the n8n environment');\n  }\n\n  let audioBuffer;\n  if (audio.base64) {\n    const normalizedBase64 = audio.base64.includes(',') ? audio.base64.split(',').pop() : audio.base64;\n    audioBuffer = Buffer.from(normalizedBase64, 'base64');\n  } else {\n    const audioResponse = await fetch(audio.url);\n    if (!audioResponse.ok) {\n      throw new Error(`Failed to download audio: ${audioResponse.status} ${audioResponse.statusText}`);\n    }\n    audioBuffer = Buffer.from(await audioResponse.arrayBuffer());\n  }\n\n  const formData = new FormData();\n  const extension = audio.mimeType.includes('mpeg') ? 'mp3' : audio.mimeType.includes('mp4') ? 'm4a' : 'ogg';\n  formData.append('file', new Blob([audioBuffer], { type: audio.mimeType }), `voice-note.${extension}`);\n  formData.append('model', 'whisper-1');\n\n  const transcriptionResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {\n    method: 'POST',\n    headers: { Authorization: `Bearer ${openAiKey}` },\n    body: formData\n  });\n\n  if (!transcriptionResponse.ok) {\n    const errorText = await transcriptionResponse.text();\n    throw new Error(`Whisper transcription failed: ${transcriptionResponse.status} ${errorText}`);\n  }\n\n  const transcriptionPayload = await transcriptionResponse.json();\n  transcription = transcriptionPayload.text?.trim() ?? '';\n  promptText = transcription;\n}\n\nif (!promptText) {\n  return { json: { action: 'skipped', reason: 'empty-prompt-after-normalization', route: 'skip', event, remoteJid } };\n}\n\nconst storeOrPersonalSignals = /(order|tracking|track my order|shipment|shipping status|refund|return|exchange|invoice|billing|payment|my account|my address|where is your store|store location|shop location|branch|open today|close today|opening hours|closing time|contact number|phone number|owner|manager|email address|location)/i;\nconst visualSignals = /(match|same|similar|check|identify|compare|from (this|the) (photo|image|pic)|see (this|the) (photo|image|pic))/i;\nconst requiresHuman = hasImage || hasDocument || visualSignals.test(promptText) || storeOrPersonalSignals.test(promptText);\nconst handoffReason = hasImage\n  ? 'image-review'\n  : hasDocument\n    ? 'document-review'\n    : visualSignals.test(promptText)\n      ? 'visual-product-match'\n      : storeOrPersonalSignals.test(promptText)\n        ? 'store-or-personal-details'\n        : null;\nconst productIntent = !requiresHuman && detectProductIntent(promptText);\n\nreturn {\n  json: {\n    action: 'routed',\n    event,\n    remoteJid,\n    senderNumber,\n    promptText,\n    originalText: text,\n    transcription,\n    route: requiresHuman ? 'human' : productIntent ? 'product' : 'general',\n    productIntent,\n    requiresHuman,\n    handoffReason,\n    hasImage,\n    hasDocument,\n    isAudio\n  }\n};"
+        "jsCode": "const payload = $json.body ?? $json;\n\nfunction firstDefined(...values) {\n  return values.find((value) => value !== undefined && value !== null);\n}\n\nfunction normalizeText(message) {\n  return firstDefined(\n    message?.conversation,\n    message?.extendedTextMessage?.text,\n    message?.imageMessage?.caption,\n    message?.videoMessage?.caption,\n    message?.documentMessage?.caption,\n    ''\n  );\n}\n\nfunction extractAudio(message) {\n  return {\n    url: firstDefined(message?.audioMessage?.url, message?.pttMessage?.url, null),\n    base64: firstDefined(message?.audioMessage?.base64, message?.pttMessage?.base64, null),\n    mimeType: firstDefined(message?.audioMessage?.mimetype, message?.pttMessage?.mimetype, 'audio/ogg')\n  };\n}\n\nfunction detectProductIntent(value) {\n  return /(product|products|price|cost|stock|available|availability|catalog|item|buy|purchase|details)/i.test(value || '');\n}\n\nfunction detectOrderIntent(value) {\n  return /(order status|status of (my )?order|where is my order|track(ing)?( my)? order|shipment|shipping status|delivery status|invoice|bill|order #|order number)/i.test(value || '');\n}\n\nfunction detectPaymentIntent(value) {\n  return /(payment option|payment options|payment method|payment methods|how can i pay|how to pay|upi|card|credit card|debit card|cash on delivery|cod|bank transfer|net banking)/i.test(value || '');\n}\n\nfunction detectStoreInfoIntent(value) {\n  return /(where is your store|store location|shop location|branch|open today|close today|opening hours|closing time|contact number|phone number|email address|store hours|working hours|address|location)/i.test(value || '');\n}\n\nfunction extractOrderLookupText(value) {\n  const orderMatch = value?.match(/#?\\d{3,}/);\n  return orderMatch ? orderMatch[0].replace('#', '') : value;\n}\n\nconst event = firstDefined(payload?.event, payload?.type, payload?.data?.event, 'unknown');\nconst data = firstDefined(payload?.data, payload);\nconst key = firstDefined(data?.key, data?.message?.key, data?.messages?.[0]?.key, {});\nconst message = firstDefined(data?.message, data?.messages?.[0]?.message, {});\nconst remoteJid = firstDefined(key?.remoteJid, data?.remoteJid, '');\nconst fromMe = Boolean(firstDefined(key?.fromMe, data?.fromMe, false));\nconst isGroup = remoteJid.endsWith('@g.us');\nconst isStatus = remoteJid === 'status@broadcast';\nconst senderNumber = remoteJid.replace(/@.+$/, '').replace(/\\D/g, '');\nconst text = normalizeText(message).trim();\nconst audio = extractAudio(message);\nconst isAudio = Boolean(audio.url || audio.base64);\nconst hasImage = Boolean(message?.imageMessage);\nconst hasDocument = Boolean(message?.documentMessage);\n\nif (fromMe || isGroup || isStatus) {\n  return { json: { action: 'skipped', reason: 'self-group-or-status', route: 'skip', event, remoteJid } };\n}\n\nif (!senderNumber) {\n  return { json: { action: 'skipped', reason: 'missing-sender-number', route: 'skip', event, remoteJid } };\n}\n\nif (!text && !isAudio) {\n  return { json: { action: 'skipped', reason: 'no-text-or-audio', route: 'skip', event, remoteJid } };\n}\n\nlet promptText = text;\nlet transcription = null;\n\nif (isAudio) {\n  const openAiKey = process.env.OPENAI_API_KEY;\n  if (!openAiKey) {\n    throw new Error('OPENAI_API_KEY is missing in the n8n environment');\n  }\n\n  let audioBuffer;\n  if (audio.base64) {\n    const normalizedBase64 = audio.base64.includes(',') ? audio.base64.split(',').pop() : audio.base64;\n    audioBuffer = Buffer.from(normalizedBase64, 'base64');\n  } else {\n    const audioResponse = await fetch(audio.url);\n    if (!audioResponse.ok) {\n      throw new Error(`Failed to download audio: ${audioResponse.status} ${audioResponse.statusText}`);\n    }\n    audioBuffer = Buffer.from(await audioResponse.arrayBuffer());\n  }\n\n  const formData = new FormData();\n  const extension = audio.mimeType.includes('mpeg') ? 'mp3' : audio.mimeType.includes('mp4') ? 'm4a' : 'ogg';\n  formData.append('file', new Blob([audioBuffer], { type: audio.mimeType }), `voice-note.${extension}`);\n  formData.append('model', 'whisper-1');\n\n  const transcriptionResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {\n    method: 'POST',\n    headers: { Authorization: `Bearer ${openAiKey}` },\n    body: formData\n  });\n\n  if (!transcriptionResponse.ok) {\n    const errorText = await transcriptionResponse.text();\n    throw new Error(`Whisper transcription failed: ${transcriptionResponse.status} ${errorText}`);\n  }\n\n  const transcriptionPayload = await transcriptionResponse.json();\n  transcription = transcriptionPayload.text?.trim() ?? '';\n  promptText = transcription;\n}\n\nif (!promptText) {\n  return { json: { action: 'skipped', reason: 'empty-prompt-after-normalization', route: 'skip', event, remoteJid } };\n}\n\nconst accountOrRefundSignals = /(refund|return|exchange|my account|my address|owner|manager)/i;\nconst visualSignals = /(match|same|similar|check|identify|compare|from (this|the) (photo|image|pic)|see (this|the) (photo|image|pic))/i;\nconst requiresHuman = hasImage || hasDocument || visualSignals.test(promptText) || accountOrRefundSignals.test(promptText);\nconst productIntent = !requiresHuman && detectProductIntent(promptText);\nconst orderIntent = !requiresHuman && detectOrderIntent(promptText);\nconst paymentIntent = !requiresHuman && !orderIntent && detectPaymentIntent(promptText);\nconst storeInfoIntent = !requiresHuman && !orderIntent && !paymentIntent && detectStoreInfoIntent(promptText);\nconst handoffReason = hasImage\n  ? 'image-review'\n  : hasDocument\n    ? 'document-review'\n    : visualSignals.test(promptText)\n      ? 'visual-product-match'\n      : accountOrRefundSignals.test(promptText)\n        ? 'account-or-refund-details'\n        : null;\n\nlet route = 'general';\nif (requiresHuman) {\n  route = 'human';\n} else if (orderIntent) {\n  route = 'order';\n} else if (paymentIntent) {\n  route = 'payment';\n} else if (storeInfoIntent) {\n  route = 'store';\n} else if (productIntent) {\n  route = 'product';\n}\n\nreturn {\n  json: {\n    action: 'routed',\n    event,\n    remoteJid,\n    senderNumber,\n    promptText,\n    originalText: text,\n    transcription,\n    route,\n    productIntent,\n    orderIntent,\n    paymentIntent,\n    storeInfoIntent,\n    orderLookupText: extractOrderLookupText(promptText),\n    requiresHuman,\n    handoffReason,\n    hasImage,\n    hasDocument,\n    isAudio\n  }\n};"
       },
       "id": "0e18bf42-b2b7-4fe5-91d6-9dd06ea2c92b",
       "name": "Normalize Incoming",
@@ -75,7 +75,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nasync function notifyHuman(payload) {\n  const handoffWebhookUrl = process.env.HUMAN_HANDOFF_WEBHOOK_URL;\n  if (!handoffWebhookUrl) {\n    return null;\n  }\n\n  const response = await fetch(handoffWebhookUrl, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(payload)\n  });\n\n  const responseText = await response.text();\n  if (!response.ok) {\n    throw new Error(`Human handoff webhook failed: ${response.status} ${responseText}`);\n  }\n\n  return responseText;\n}\n\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\n\nconst replyMap = {\n  'image-review': 'Thanks for sharing that. I am forwarding this to a team member so they can review the image and help you properly.',\n  'document-review': 'I am forwarding this to a team member so they can review the document and help you properly.',\n  'visual-product-match': 'I cannot reliably verify product matches from a photo here, so I am forwarding this to a team member.',\n  'store-or-personal-details': 'I am forwarding this to a team member so they can confirm the exact store or account details for you.'\n};\n\nconst replyText = replyMap[$json.handoffReason] || 'I am forwarding this to a team member who can help you with this request.';\nconst handoffPayload = {\n  source: 'whatsapp-ai-auto-reply',\n  senderNumber: $json.senderNumber,\n  remoteJid: $json.remoteJid,\n  promptText: $json.promptText,\n  originalText: $json.originalText,\n  transcription: $json.transcription,\n  handoffReason: $json.handoffReason,\n  event: $json.event,\n  occurredAt: new Date().toISOString()\n};\n\nconst handoffResponse = await notifyHuman(handoffPayload);\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: $json.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: 'human-handoff',\n    senderNumber: $json.senderNumber,\n    handoffReason: $json.handoffReason,\n    promptText: $json.promptText,\n    replyText,\n    handoffPayload,\n    handoffResponse,\n    evolutionResponse: sendPayload\n  }\n};"
+        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nasync function notifyHuman(payload) {\n  const handoffWebhookUrl = process.env.HUMAN_HANDOFF_WEBHOOK_URL;\n  if (!handoffWebhookUrl) {\n    return null;\n  }\n\n  const response = await fetch(handoffWebhookUrl, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(payload)\n  });\n\n  const responseText = await response.text();\n  if (!response.ok) {\n    throw new Error(`Human handoff webhook failed: ${response.status} ${responseText}`);\n  }\n\n  return responseText;\n}\n\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\n\nconst replyMap = {\n  'image-review': 'Thanks for sharing that. I am forwarding this to a team member so they can review the image and help you properly.',\n  'document-review': 'I am forwarding this to a team member so they can review the document and help you properly.',\n  'visual-product-match': 'I cannot reliably verify product matches from a photo here, so I am forwarding this to a team member.',\n  'account-or-refund-details': 'I am forwarding this to a team member so they can confirm the exact account or refund details for you.'\n};\n\nconst replyText = replyMap[$json.handoffReason] || 'I am forwarding this to a team member who can help you with this request.';\nconst handoffPayload = {\n  source: 'whatsapp-ai-auto-reply',\n  senderNumber: $json.senderNumber,\n  remoteJid: $json.remoteJid,\n  promptText: $json.promptText,\n  originalText: $json.originalText,\n  transcription: $json.transcription,\n  handoffReason: $json.handoffReason,\n  event: $json.event,\n  occurredAt: new Date().toISOString()\n};\n\nconst handoffResponse = await notifyHuman(handoffPayload);\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: $json.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: 'human-handoff',\n    senderNumber: $json.senderNumber,\n    handoffReason: $json.handoffReason,\n    promptText: $json.promptText,\n    replyText,\n    handoffPayload,\n    handoffResponse,\n    evolutionResponse: sendPayload\n  }\n};"
       },
       "id": "307514e9-0734-45f6-bf80-62461ee9c4a4",
       "name": "Send Human Handoff Reply",
@@ -86,10 +86,11 @@
     {
       "parameters": {
         "conditions": {
-          "boolean": [
+          "string": [
             {
-              "value1": "={{$json.productIntent}}",
-              "operation": "true"
+              "value1": "={{$json.route}}",
+              "value2": "product",
+              "operation": "equal"
             }
           ]
         }
@@ -99,6 +100,271 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [1260, 520]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.route}}",
+              "value2": "store",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "3e21c85a-9d7d-4357-a1d6-cbd6289b8cbc",
+      "name": "Store Info Request?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1260, 620]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const storeInfoContext = [\n  'Store address: Update this branch with your real showroom or pickup location before going live.',\n  'Opening hours: Update this branch with your real business hours.',\n  'Contact phone: Update this branch with your real support number.',\n  'Support email: Update this branch with your real support email.'\n].join('\\n');\n\nconst systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nUse only the store info context provided.\nIf exact branch-specific details are missing, ask the customer to contact the team.`;\n\nconst userPrompt = `Customer message:\n${$json.promptText}\\n\\nStore info context:\n${storeInfoContext}`;\n\nreturn {\n  json: {\n    ...$json,\n    openAiMessages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: userPrompt }\n    ]\n  }\n};"
+      },
+      "id": "4727dca6-e999-4fda-ac6e-0f70c08070b5",
+      "name": "Prepare Store Info Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 560]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "complete",
+        "chatModel": "gpt-4o-mini",
+        "prompt": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "={{$json.openAiMessages[0].content}}"
+            },
+            {
+              "role": "user",
+              "content": "={{$json.openAiMessages[1].content}}"
+            }
+          ]
+        },
+        "simplifyOutput": true,
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "987e4805-4131-4e54-9e21-7fc2aa52b2b9",
+      "name": "OpenAI Store Info Reply",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.1,
+      "position": [1760, 560],
+      "credentials": {
+        "openAiApi": {
+          "id": "2ea268dd-5fb0-4080-93f3-3eb29188656c",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nconst prepared = $items('Prepare Store Info Context', 0, 0)[0].json;\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\n\nconst replyText = ($json.message?.content ?? '').trim();\nif (!replyText) {\n  throw new Error('OpenAI returned an empty reply for the store info branch');\n}\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: prepared.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: 'store-info-replied',\n    senderNumber: prepared.senderNumber,\n    promptText: prepared.promptText,\n    replyText,\n    evolutionResponse: sendPayload\n  }\n};"
+      },
+      "id": "e1a4df6b-4c51-41ee-8c57-b7c0210fcb0c",
+      "name": "Send Store Info Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 560]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.route}}",
+              "value2": "order",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "76d1a2ec-5999-45e7-a154-8e10afc45dc4",
+      "name": "Order Status Request?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1520, 720]
+    },
+    {
+      "parameters": {
+        "resource": "order",
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 3,
+        "options": {
+          "search": "={{$json.orderLookupText}}",
+          "status": "any",
+          "order": "desc",
+          "orderBy": "date"
+        }
+      },
+      "id": "59147831-91ff-4f66-901c-639c6f1d4f80",
+      "name": "WooCommerce Order Search",
+      "type": "n8n-nodes-base.wooCommerce",
+      "typeVersion": 1,
+      "position": [1760, 720],
+      "credentials": {
+        "wooCommerceApi": {
+          "id": "c1hDGmnfjhyGQV5Q",
+          "name": "WooCommerce account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const original = $items('Order Status Request?', 0, 0)[0].json;\nconst orders = $input.all().map((item) => item.json).filter((order) => order && order.id);\n\nif (!orders.length) {\n  return {\n    json: {\n      ...original,\n      replyText: 'I could not find an order with that reference. Please share your order number so I can check the status for you.',\n      aiRequired: false,\n      matchedOrders: []\n    }\n  };\n}\n\nconst orderContext = orders\n  .map((order) => [\n    `Order ID: ${order.id}`,\n    `Status: ${order.status || 'unknown'}`,\n    `Total: ${order.total || 'not available'} ${order.currency || ''}`.trim(),\n    `Payment method: ${order.payment_method_title || order.payment_method || 'not available'}`,\n    `Created: ${order.date_created || 'not available'}`\n  ].join('\\n'))\n  .join('\\n\\n');\n\nconst systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nUse only the order data provided.\nDo not invent delivery or tracking details that are not in the order data.`;\n\nconst userPrompt = `Customer message:\n${original.promptText}\\n\\nOrder data:\n${orderContext}`;\n\nreturn {\n  json: {\n    ...original,\n    aiRequired: true,\n    matchedOrders: orders,\n    openAiMessages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: userPrompt }\n    ]\n  }\n};"
+      },
+      "id": "845fb0f0-fd20-44b6-9eff-6650cfca7c9e",
+      "name": "Prepare Order Reply Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 720]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.aiRequired}}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "2a8678e0-f7de-4b82-9f0e-a5883db59bcc",
+      "name": "Order Needs OpenAI?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2240, 720]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "complete",
+        "chatModel": "gpt-4o-mini",
+        "prompt": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "={{$json.openAiMessages[0].content}}"
+            },
+            {
+              "role": "user",
+              "content": "={{$json.openAiMessages[1].content}}"
+            }
+          ]
+        },
+        "simplifyOutput": true,
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "1ec164f9-4548-454a-b508-d0612186b428",
+      "name": "OpenAI Order Reply",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.1,
+      "position": [2480, 660],
+      "credentials": {
+        "openAiApi": {
+          "id": "2ea268dd-5fb0-4080-93f3-3eb29188656c",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nconst prepared = $items('Prepare Order Reply Context', 0, 0)[0].json;\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\n\nconst replyText = ($json.message?.content ?? $json.replyText ?? prepared.replyText ?? '').trim();\nif (!replyText) {\n  throw new Error('Missing order reply text');\n}\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: prepared.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: prepared.aiRequired ? 'order-status-replied' : 'order-status-missing-reference',\n    senderNumber: prepared.senderNumber,\n    promptText: prepared.promptText,\n    replyText,\n    matchedOrders: prepared.matchedOrders,\n    evolutionResponse: sendPayload\n  }\n};"
+      },
+      "id": "557a4634-237d-40cc-8d5b-3f927ceaf4c4",
+      "name": "Send Order Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2720, 720]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.route}}",
+              "value2": "payment",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "ff9583db-f819-431f-b80c-91c1430ca3e1",
+      "name": "Payment Info Request?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1760, 860]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const paymentInfoContext = [\n  'Supported payment options: Update this branch with your real methods such as UPI, cards, bank transfer, or cash on delivery before going live.',\n  'If the customer is asking about the payment status of an existing order, ask them to share the order number so the order-status branch can check it.',\n  'Do not promise payment methods that are not enabled in the store.'\n].join('\\n');\n\nconst systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nUse only the payment info context provided.`;\n\nconst userPrompt = `Customer message:\n${$json.promptText}\\n\\nPayment info context:\n${paymentInfoContext}`;\n\nreturn {\n  json: {\n    ...$json,\n    openAiMessages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: userPrompt }\n    ]\n  }\n};"
+      },
+      "id": "a10d5301-2772-4bc1-827a-0229c6dd6731",
+      "name": "Prepare Payment Info Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 860]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "complete",
+        "chatModel": "gpt-4o-mini",
+        "prompt": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "={{$json.openAiMessages[0].content}}"
+            },
+            {
+              "role": "user",
+              "content": "={{$json.openAiMessages[1].content}}"
+            }
+          ]
+        },
+        "simplifyOutput": true,
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "2958ee18-4196-4b0e-9735-24fd7ccad2d5",
+      "name": "OpenAI Payment Info Reply",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.1,
+      "position": [2240, 860],
+      "credentials": {
+        "openAiApi": {
+          "id": "2ea268dd-5fb0-4080-93f3-3eb29188656c",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nconst prepared = $items('Prepare Payment Info Context', 0, 0)[0].json;\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\n\nconst replyText = ($json.message?.content ?? '').trim();\nif (!replyText) {\n  throw new Error('OpenAI returned an empty reply for the payment info branch');\n}\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: prepared.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: 'payment-info-replied',\n    senderNumber: prepared.senderNumber,\n    promptText: prepared.promptText,\n    replyText,\n    evolutionResponse: sendPayload\n  }\n};"
+      },
+      "id": "3b6af076-a3bb-4557-ae3d-7d31da9fc6d1",
+      "name": "Send Payment Info Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2480, 860]
     },
     {
       "parameters": {
@@ -116,29 +382,142 @@
       "type": "n8n-nodes-base.wooCommerce",
       "typeVersion": 1,
       "position": [1520, 420],
+      "credentials": {
+        "wooCommerceApi": {
+          "id": "c1hDGmnfjhyGQV5Q",
+          "name": "WooCommerce account"
+        }
+      },
       "alwaysOutputData": true
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nfunction stripHtml(value) {\n  return value ? value.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim() : '';\n}\n\nasync function notifyHuman(payload) {\n  const handoffWebhookUrl = process.env.HUMAN_HANDOFF_WEBHOOK_URL;\n  if (!handoffWebhookUrl) {\n    return null;\n  }\n\n  const response = await fetch(handoffWebhookUrl, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(payload)\n  });\n\n  const responseText = await response.text();\n  if (!response.ok) {\n    throw new Error(`Human handoff webhook failed: ${response.status} ${responseText}`);\n  }\n\n  return responseText;\n}\n\nconst original = $items('Product Question?', 0, 0)[0].json;\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\nconst openAiKey = ensureEnv('OPENAI_API_KEY');\n\nconst products = $input.all().map((item) => item.json).filter((product) => product && (product.id || product.name));\nlet replyText;\nlet handoffResponse = null;\n\nif (!products.length) {\n  replyText = 'I could not find an exact product match in the catalog right now, so I am forwarding this to a team member for a manual check.';\n  handoffResponse = await notifyHuman({\n    source: 'whatsapp-ai-auto-reply',\n    senderNumber: original.senderNumber,\n    remoteJid: original.remoteJid,\n    promptText: original.promptText,\n    originalText: original.originalText,\n    transcription: original.transcription,\n    handoffReason: 'no-product-match',\n    event: original.event,\n    occurredAt: new Date().toISOString()\n  });\n} else {\n  const businessContext = products\n    .map((product, index) => [\n      `${index + 1}. ${product.name}`,\n      `Price: ${product.price_html || product.price || product.regular_price || 'not available'}`,\n      `Stock: ${product.stock_status || 'unknown'}`,\n      product.short_description || product.description ? `Summary: ${stripHtml(product.short_description || product.description).slice(0, 220)}` : null,\n      product.permalink ? `Link: ${product.permalink}` : null\n    ].filter(Boolean).join('\\n'))\n    .join('\\n\\n');\n\n  const systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nSupport Malayalam, Manglish, English, Hindi, Tamil, and Kannada.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nUse only the catalog context provided.\nDo not invent prices, stock, delivery times, sizes, or URLs.\nIf exact business data is missing, say a team member will help.`;\n\n  const userPrompt = `Customer message:\n${original.promptText}\n\nCatalog context:\n${businessContext}`;\n\n  const chatResponse = await fetch('https://api.openai.com/v1/chat/completions', {\n    method: 'POST',\n    headers: { Authorization: `Bearer ${openAiKey}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      model: 'gpt-4o-mini',\n      temperature: 0.4,\n      messages: [\n        { role: 'system', content: systemPrompt },\n        { role: 'user', content: userPrompt }\n      ]\n    })\n  });\n\n  if (!chatResponse.ok) {\n    const errorText = await chatResponse.text();\n    throw new Error(`OpenAI reply generation failed: ${chatResponse.status} ${errorText}`);\n  }\n\n  const chatPayload = await chatResponse.json();\n  replyText = chatPayload.choices?.[0]?.message?.content?.trim();\n  if (!replyText) {\n    throw new Error('OpenAI returned an empty reply for the product branch');\n  }\n}\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: original.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: products.length ? 'product-replied' : 'product-handoff',\n    senderNumber: original.senderNumber,\n    promptText: original.promptText,\n    matchedProducts: products,\n    replyText,\n    handoffResponse,\n    evolutionResponse: sendPayload\n  }\n};"
+        "jsCode": "function stripHtml(value) {\n  return value ? value.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim() : '';\n}\n\nasync function notifyHuman(payload) {\n  const handoffWebhookUrl = process.env.HUMAN_HANDOFF_WEBHOOK_URL;\n  if (!handoffWebhookUrl) {\n    return null;\n  }\n\n  const response = await fetch(handoffWebhookUrl, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(payload)\n  });\n\n  const responseText = await response.text();\n  if (!response.ok) {\n    throw new Error(`Human handoff webhook failed: ${response.status} ${responseText}`);\n  }\n\n  return responseText;\n}\n\nconst original = $items('Product Question?', 0, 0)[0].json;\nconst products = $input.all().map((item) => item.json).filter((product) => product && (product.id || product.name));\n\nif (!products.length) {\n  const replyText = 'I could not find an exact product match in the catalog right now, so I am forwarding this to a team member for a manual check.';\n  const handoffResponse = await notifyHuman({\n    source: 'whatsapp-ai-auto-reply',\n    senderNumber: original.senderNumber,\n    remoteJid: original.remoteJid,\n    promptText: original.promptText,\n    originalText: original.originalText,\n    transcription: original.transcription,\n    handoffReason: 'no-product-match',\n    event: original.event,\n    occurredAt: new Date().toISOString()\n  });\n\n  return {\n    json: {\n      ...original,\n      action: 'product-handoff',\n      matchedProducts: [],\n      handoffResponse,\n      replyText,\n      aiRequired: false\n    }\n  };\n}\n\nconst businessContext = products\n  .map((product, index) => [\n    `${index + 1}. ${product.name}`,\n    `Price: ${product.price_html || product.price || product.regular_price || 'not available'}`,\n    `Stock: ${product.stock_status || 'unknown'}`,\n    product.short_description || product.description ? `Summary: ${stripHtml(product.short_description || product.description).slice(0, 220)}` : null,\n    product.permalink ? `Link: ${product.permalink}` : null\n  ].filter(Boolean).join('\\n'))\n  .join('\\n\\n');\n\nconst systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nSupport Malayalam, Manglish, English, Hindi, Tamil, and Kannada.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nUse only the catalog context provided.\nDo not invent prices, stock, delivery times, sizes, or URLs.\nIf exact business data is missing, say a team member will help.`;\n\nconst userPrompt = `Customer message:\n${original.promptText}\n\nCatalog context:\n${businessContext}`;\n\nreturn {\n  json: {\n    ...original,\n    action: 'product-openai',\n    matchedProducts: products,\n    handoffResponse: null,\n    aiRequired: true,\n    openAiMessages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: userPrompt }\n    ]\n  }\n};"
+      },
+      "id": "cbdfd30b-6c1d-4c9c-b6c2-5b12005e5d11",
+      "name": "Prepare Product Reply Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 420]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.aiRequired}}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "1f177aa6-f06a-4ce0-a9db-b2e3ddc068c8",
+      "name": "Product Needs OpenAI?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2000, 420]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "complete",
+        "chatModel": "gpt-4o-mini",
+        "prompt": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "={{$json.openAiMessages[0].content}}"
+            },
+            {
+              "role": "user",
+              "content": "={{$json.openAiMessages[1].content}}"
+            }
+          ]
+        },
+        "simplifyOutput": true,
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "id": "3b4fc20c-c0c4-43e1-a391-500fbd41fdb8",
+      "name": "OpenAI Product Reply",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.1,
+      "position": [2240, 320],
+      "credentials": {
+        "openAiApi": {
+          "id": "2ea268dd-5fb0-4080-93f3-3eb29188656c",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nconst prepared = $items('Prepare Product Reply Context', 0, 0)[0].json;\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\n\nconst replyText = ($json.message?.content ?? $json.replyText ?? prepared.replyText ?? '').trim();\nif (!replyText) {\n  throw new Error('Missing product reply text');\n}\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: prepared.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: prepared.aiRequired ? 'product-replied' : 'product-handoff',\n    senderNumber: prepared.senderNumber,\n    promptText: prepared.promptText,\n    matchedProducts: prepared.matchedProducts,\n    replyText,\n    handoffResponse: prepared.handoffResponse,\n    evolutionResponse: sendPayload\n  }\n};"
       },
       "id": "88a3e80f-6680-4ae2-aa4d-bf42f09fcf60",
       "name": "Send Product Reply",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1780, 420]
+      "position": [2480, 420]
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\nconst openAiKey = ensureEnv('OPENAI_API_KEY');\n\nconst systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nSupport Malayalam, Manglish, English, Hindi, Tamil, and Kannada.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nDo not invent store policies, order details, stock, prices, addresses, or customer-specific information.\nIf exact business data is required, say a team member will help.`;\n\nconst chatResponse = await fetch('https://api.openai.com/v1/chat/completions', {\n  method: 'POST',\n  headers: { Authorization: `Bearer ${openAiKey}`, 'Content-Type': 'application/json' },\n  body: JSON.stringify({\n    model: 'gpt-4o-mini',\n    temperature: 0.6,\n    messages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: $json.promptText }\n    ]\n  })\n});\n\nif (!chatResponse.ok) {\n  const errorText = await chatResponse.text();\n  throw new Error(`OpenAI reply generation failed: ${chatResponse.status} ${errorText}`);\n}\n\nconst chatPayload = await chatResponse.json();\nconst replyText = chatPayload.choices?.[0]?.message?.content?.trim();\nif (!replyText) {\n  throw new Error('OpenAI returned an empty reply for the general branch');\n}\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: $json.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: 'general-replied',\n    senderNumber: $json.senderNumber,\n    promptText: $json.promptText,\n    replyText,\n    evolutionResponse: sendPayload\n  }\n};"
+        "jsCode": "const systemPrompt = `You are a multilingual WhatsApp assistant.\nReply in the same language used by the customer.\nSupport Malayalam, Manglish, English, Hindi, Tamil, and Kannada.\nKeep responses short, natural, and WhatsApp-friendly.\nDo not use markdown.\nDo not invent store policies, order details, stock, prices, addresses, or customer-specific information.\nIf exact business data is required, say a team member will help.`;\n\nreturn {\n  json: {\n    ...$json,\n    openAiMessages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: $json.promptText }\n    ]\n  }\n};"
+      },
+      "id": "09d1314c-c7d8-4659-9bbd-6f2fc19a98ff",
+      "name": "Prepare General Reply Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 620]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "complete",
+        "chatModel": "gpt-4o-mini",
+        "prompt": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "={{$json.openAiMessages[0].content}}"
+            },
+            {
+              "role": "user",
+              "content": "={{$json.openAiMessages[1].content}}"
+            }
+          ]
+        },
+        "simplifyOutput": true,
+        "options": {
+          "temperature": 0.6
+        }
+      },
+      "id": "bb7f4973-ec2f-4210-80a9-c591d57f0c0a",
+      "name": "OpenAI General Reply",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.1,
+      "position": [1760, 620],
+      "credentials": {
+        "openAiApi": {
+          "id": "2ea268dd-5fb0-4080-93f3-3eb29188656c",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function ensureEnv(name) {\n  const value = process.env[name];\n  if (!value) {\n    throw new Error(`${name} is missing in the n8n environment`);\n  }\n  return value;\n}\n\nconst prepared = $items('Prepare General Reply Context', 0, 0)[0].json;\nconst evolutionApiKey = ensureEnv('EVOLUTION_API_KEY');\nconst evolutionInstance = ensureEnv('EVOLUTION_INSTANCE');\nconst evolutionServerUrl = ensureEnv('EVOLUTION_SERVER_URL');\n\nconst replyText = ($json.message?.content ?? '').trim();\nif (!replyText) {\n  throw new Error('OpenAI returned an empty reply for the general branch');\n}\n\nconst sendResponse = await fetch(`${evolutionServerUrl}/message/sendText/${evolutionInstance}`, {\n  method: 'POST',\n  headers: { apikey: evolutionApiKey, 'Content-Type': 'application/json' },\n  body: JSON.stringify({ number: prepared.senderNumber, text: replyText })\n});\n\nconst sendPayload = await sendResponse.json().catch(() => ({}));\nif (!sendResponse.ok) {\n  throw new Error(`Evolution sendText failed: ${sendResponse.status} ${JSON.stringify(sendPayload)}`);\n}\n\nreturn {\n  json: {\n    action: 'general-replied',\n    senderNumber: prepared.senderNumber,\n    promptText: prepared.promptText,\n    replyText,\n    evolutionResponse: sendPayload\n  }\n};"
       },
       "id": "35fd4f63-d1d0-4f9d-ab1e-bfd7f79bfe70",
       "name": "Send General Reply",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1520, 620]
+      "position": [2000, 620]
     }
   ],
   "pinData": {},
@@ -158,17 +537,80 @@
     "Needs Human?": {
       "main": [
         [{ "node": "Send Human Handoff Reply", "type": "main", "index": 0 }],
+        [{ "node": "Store Info Request?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Store Info Request?": {
+      "main": [
+        [{ "node": "Prepare Store Info Context", "type": "main", "index": 0 }],
+        [{ "node": "Order Status Request?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Store Info Context": {
+      "main": [[{ "node": "OpenAI Store Info Reply", "type": "main", "index": 0 }]]
+    },
+    "OpenAI Store Info Reply": {
+      "main": [[{ "node": "Send Store Info Reply", "type": "main", "index": 0 }]]
+    },
+    "Order Status Request?": {
+      "main": [
+        [{ "node": "WooCommerce Order Search", "type": "main", "index": 0 }],
+        [{ "node": "Payment Info Request?", "type": "main", "index": 0 }]
+      ]
+    },
+    "WooCommerce Order Search": {
+      "main": [[{ "node": "Prepare Order Reply Context", "type": "main", "index": 0 }]]
+    },
+    "Prepare Order Reply Context": {
+      "main": [[{ "node": "Order Needs OpenAI?", "type": "main", "index": 0 }]]
+    },
+    "Order Needs OpenAI?": {
+      "main": [
+        [{ "node": "OpenAI Order Reply", "type": "main", "index": 0 }],
+        [{ "node": "Send Order Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "OpenAI Order Reply": {
+      "main": [[{ "node": "Send Order Reply", "type": "main", "index": 0 }]]
+    },
+    "Payment Info Request?": {
+      "main": [
+        [{ "node": "Prepare Payment Info Context", "type": "main", "index": 0 }],
         [{ "node": "Product Question?", "type": "main", "index": 0 }]
       ]
+    },
+    "Prepare Payment Info Context": {
+      "main": [[{ "node": "OpenAI Payment Info Reply", "type": "main", "index": 0 }]]
+    },
+    "OpenAI Payment Info Reply": {
+      "main": [[{ "node": "Send Payment Info Reply", "type": "main", "index": 0 }]]
     },
     "Product Question?": {
       "main": [
         [{ "node": "WooCommerce Product Search", "type": "main", "index": 0 }],
-        [{ "node": "Send General Reply", "type": "main", "index": 0 }]
+        [{ "node": "Prepare General Reply Context", "type": "main", "index": 0 }]
       ]
     },
     "WooCommerce Product Search": {
+      "main": [[{ "node": "Prepare Product Reply Context", "type": "main", "index": 0 }]]
+    },
+    "Prepare Product Reply Context": {
+      "main": [[{ "node": "Product Needs OpenAI?", "type": "main", "index": 0 }]]
+    },
+    "Product Needs OpenAI?": {
+      "main": [
+        [{ "node": "OpenAI Product Reply", "type": "main", "index": 0 }],
+        [{ "node": "Send Product Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "OpenAI Product Reply": {
       "main": [[{ "node": "Send Product Reply", "type": "main", "index": 0 }]]
+    },
+    "Prepare General Reply Context": {
+      "main": [[{ "node": "OpenAI General Reply", "type": "main", "index": 0 }]]
+    },
+    "OpenAI General Reply": {
+      "main": [[{ "node": "Send General Reply", "type": "main", "index": 0 }]]
     }
   },
   "active": false,

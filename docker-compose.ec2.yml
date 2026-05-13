@@ -1,0 +1,64 @@
+services:
+  evolution-api:
+    ports: !override
+      - "127.0.0.1:8080:8080"
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  n8n:
+    ports: !override
+      - "127.0.0.1:${N8N_PORT}:5678"
+    extra_hosts: !override []
+    environment:
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      N8N_SECURE_COOKIE: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_TEMPLATES_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  connect-ui:
+    ports: !override
+      - "127.0.0.1:3000:3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
